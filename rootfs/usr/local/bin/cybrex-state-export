@@ -1,0 +1,41 @@
+#!/bin/bash
+# cybrex-state-export: Dumps system state to JSON for Live Preview / Dashboard
+
+OUTPUT_FILE="/opt/cybrex/dashboard/state.json"
+mkdir -p $(dirname "$OUTPUT_FILE")
+
+# mock data for now, in real OS this would read commands
+UPTIME=$(uptime -p | sed 's/up //')
+KERNEL=$(uname -r)
+LOAD=$(uptime | awk -F'load average:' '{ print $2 }')
+POWER_PROFILE=$(grep "profile" /etc/cybrex/power.toml | cut -d'"' -f2)
+FIREWALL_STATUS=$(nft list ruleset >/dev/null 2>&1 && echo "active" || echo "inactive")
+
+# Create JSON structure
+cat <<EOF > "$OUTPUT_FILE"
+{
+  "system": {
+    "hostname": "$(hostname)",
+    "kernel": "$KERNEL",
+    "uptime": "$UPTIME",
+    "load_average": "$LOAD"
+  },
+  "power": {
+    "profile": "$POWER_PROFILE",
+    "battery_level": 85,
+    "status": "Discharging"
+  },
+  "security": {
+    "firewall": "$FIREWALL_STATUS",
+    "usb_guard": "active",
+    "network_mode": "secure"
+  },
+  "dev_profiles": [
+    "web",
+    "backend"
+  ],
+  "last_updated": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+
+chmod 644 "$OUTPUT_FILE"

@@ -1,0 +1,14 @@
+[Unit]
+Description=CybrexTech OS Control Daemon
+Documentation=man:cybrex-ctl(1)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cybrex-ctl status
+Restart=on-failure
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

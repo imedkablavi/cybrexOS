@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import json
+import os
+import time
+import threading
+import sys
+
+# Requirements: python3-toml might be needed, or we use a simple parser since our toml is flat.
+# For simplicity in this 'No External Deps' phase, we'll implement a tiny TOML-like parser or assume JSON/simple config.
+# Actually, Debian has 'python3-toml'. We will assume it's installed or use a fallback.
+
+CONFIG_DIR = "/etc/cybrex"
+PORT = 3001
+
+# In-Memory State
+SYSTEM_STATE = {
+    "power": {},
+    "security": {},
+    "system": {},
+    "lastUpdate": time.time()
+}
+
+def parse_simple_toml(filepath):
+    """ Simple parser for flat TOML to avoid dependencies in minimal VM """
+    data = {}
+    if not os.path.exists(filepath):
+        return data
+        
+    current_section = None
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('[') and line.endswith(']'):
+                current_section = line[1:-1]
+                data[current_section] = {}
+                continue
+            
+            if '=' in line:
+                key, val = line.split('=', 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                # Boolean conversion
+                if val.lower() == 'true': val = True
+                elif val.lower() == 'false': val = False
+                
+                if current_section:
+                    data[current_section][key] = val
+                else:
+                    data[key] = val
+    return data
+
+def update_state():
+    while True:
+        try:
+            SYSTEM_STATE['power'] = parse_simple_toml(os.path.join(CONFIG_DIR, 'power.toml'))
+            SYSTEM_STATE['security'] = parse_simple_toml(os.path.join(CONFIG_DIR, 'security.toml'))
+            SYSTEM_STATE['system'] = parse_simple_toml(os.path.join(CONFIG_DIR, 'main.toml'))
+            SYSTEM_STATE['lastUpdate'] = time.time()
+        except Exception as e:
+            print(f"Error updating state: {e}", file=sys.stderr)
+        time.sleep(2)
+
+class APIHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/api/state':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(SYSTEM_STATE).encode('utf-8'))
+        else:
+            self.send_error(404)
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type')
+        self.end_headers()
+    
+    def log_message(self, format, *args):
+        return # Silence logs
+
+def run_server():
+    with socketserver.TCPServer(("", PORT), APIHandler) as httpd:
+        print(f"Cybrex Daemon running on port {PORT}")
+        httpd.serve_forever()
+
+if __name__ == "__main__":
+    # Start config watcher thread
+    t = threading.Thread(target=update_state, daemon=True)
+    t.start()
+    
+    # Start API Server
+    run_server()

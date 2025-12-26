@@ -1,0 +1,114 @@
+#!/bin/bash
+# cybrex-ctl: Unified Control Interface for CybrexTech OS
+# Base: Debian Stable
+
+set -e
+
+VERSION="1.0.0-alpha"
+CONFIG_DIR="/etc/cybrex"
+LOG_FILE="/var/log/cybrex/ctl.log"
+
+# --- Helpers ---
+function log() {
+    echo "[$(date +'%Y-%m-%dT%H:%M:%S')] $1" | tee -a $LOG_FILE
+}
+
+function check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo "Please run as root (sudo cybrex-ctl)"
+        exit 1
+    fi
+}
+
+# --- Modules ---
+
+function sys_status() {
+    echo "--- CybrexTech OS ($VERSION) ---"
+    echo "Kernel: $(uname -r)"
+    echo "Distro: $(lsb_release -d | cut -f2)"
+    echo "Uptime: $(uptime -p)"
+    echo "Load: $(cat /proc/loadavg | cut -d' ' -f1-3)"
+    
+    # Check services
+    systemctl is-active --quiet fail2ban && echo "Security: PROTECTED (Fail2Ban Active)" || echo "Security: WARNING"
+}
+
+function sys_update() {
+    check_root
+    log "Starting Cybrex Update..."
+    
+    # 1. Snapshot
+    echo "[+] Creating Pre-Update Snapshot..."
+    btrfs subvolume snapshot / /snapshots/pre-update-$(date +%s)
+    
+    # 2. Update
+    echo "[+] Updating Repositories..."
+    apt update
+    echo "[+] Upgrading System..."
+    apt full-upgrade -y
+    echo "[+] Cleaning up..."
+    apt autoremove -y
+    
+    log "Update Completed Successfully."
+}
+
+function power_profile() {
+    PROFILE=$1
+    if [ -z "$PROFILE" ]; then
+        echo "[*] Current Power State:"
+        echo "    Governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo 'unknown')"
+        echo "    Profile: $(cat /var/run/cybrex/power_profile 2>/dev/null || echo 'default')"
+        return
+    fi
+    
+    check_root
+    
+    # Validation
+    if [[ ! "$PROFILE" =~ ^(saver|balanced|performance)$ ]]; then
+        echo "Error: Invalid profile. Use: saver, balanced, performance"
+        exit 1
+    fi
+
+    echo "[*] Loading Profile: $PROFILE"
+    
+    # Mocking config reading (In real impl, use a TOML parser)
+    # GOVERNOR=$(grep -A 5 "\[$PROFILE\]" /etc/cybrex/power.toml | grep "governor" | cut -d'"' -f2)
+    
+    # Apply Settings
+    echo "    -> Setting CPU Governor..."
+    # echo "$GOVERNOR" | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null
+    
+    echo "    -> Adjusting GPU Mode..."
+    # Implementation depends on hardware (optimus-manager, supergfxctl, etc.)
+    
+    echo "$PROFILE" > /var/run/cybrex/power_profile
+    log "Power profile switched to $PROFILE"
+}
+
+function security_audit() {
+    echo "[*] Scanning for failed logins..."
+    journalctl -u sshd | grep "Failed password" | tail -n 5
+    echo "[*] Checking Firewall (NFTables)..."
+    nft list ruleset | head -n 10
+}
+
+# --- Main Dispatcher ---
+
+case "$1" in
+    status)
+        sys_status
+        ;;
+    update)
+        sys_update
+        ;;
+    power)
+        power_profile $2
+        ;;
+    sec|security)
+        security_audit
+        ;;
+    *)
+        echo "Usage: cybrex-ctl {status|update|power [saver|balanced]|security}"
+        exit 1
+        ;;
+esac

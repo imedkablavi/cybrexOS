@@ -1,0 +1,36 @@
+#!/bin/bash
+# cybrex-secureboot: Secure Boot Enrollment Helper
+# Usage: Run once during installation
+
+set -e
+
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root."
+    exit 1
+fi
+
+echo "[*] CybrexTech OS: Secure Boot Setup"
+echo "This tool uses 'sbctl' to enroll custom keys."
+
+# Check for sbctl
+if ! command -v sbctl &> /dev/null; then
+    echo "Error: sbctl not found. Installing..."
+    apt install -y sbctl
+fi
+
+echo "[1] Creating custom Keys..."
+sbctl create-keys
+
+echo "[2] Signing Bootloader & Kernel..."
+sbctl sign -s /boot/efi/EFI/CybrexOS/grubx64.efi
+sbctl sign -s /boot/vmlinuz-*
+
+echo "[3] Enrolling Keys (Requires Setup Mode)..."
+read -p "Is your BIOS in Setup Mode? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    sbctl enroll-keys -m
+    echo "[SUCCESS] Secure Boot Enrolled."
+else
+    echo "[!] Please reboot into BIOS, clear keys (Setup Mode), and run this again."
+fi

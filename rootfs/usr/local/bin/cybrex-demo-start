@@ -1,0 +1,38 @@
+#!/bin/bash
+# cybrex-demo-start: Launches the Web Preview in Kiosk mode for the VM Demo
+
+GUI_PATH="/opt/cybrex/gui"
+PORT=8080
+
+# 0. Start Cybrex Daemon (API Backend)
+/usr/local/bin/cybrex-daemon &
+DAEMON_PID=$!
+
+# 1. Start Simple HTTP Server for the React App
+cd "$GUI_PATH"
+python3 -m http.server $PORT &
+SERVER_PID=$!
+
+# 2. Launch Browser in Kiosk Mode
+# Detect available browser
+if command -v chromium >/dev/null; then
+    BROWSER="chromium --kiosk --no-first-run --no-default-browser-check"
+elif command -v firefox >/dev/null; then
+    BROWSER="firefox --kiosk"
+else
+    echo "No browser found. Installing one..."
+    # This would happen in the build script, but as fallback:
+    apt-get update && apt-get install -y chromium
+    BROWSER="chromium --kiosk"
+fi
+
+# Wait for server to come up
+sleep 2
+
+# Launch
+export DISPLAY=:0
+$BROWSER "http://localhost:$PORT"
+
+# Cleanup on exit
+kill $SERVER_PID
+kill $DAEMON_PID

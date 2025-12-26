@@ -1,0 +1,29 @@
+# CybrexTech OS - Security Configuration
+# Location: /etc/cybrex/security.toml
+
+[authentication]
+# Enforce strict password policies
+min_length = 12
+require_special = true
+u2f_required = false # Set to true if YubiKey is configured
+
+[firewall]
+# Default profile loaded by cybrex-ctl
+# Options: lockdown, standard, relaxed
+default_profile = "standard"
+
+[isolation]
+# Force all network-facing apps to run in cybrex-box
+force_sandbox = ["firefox", "discord", "slack"]
+
+[usb_guard]
+# Block new USB devices when screen is locked
+block_on_lock = true
+# Whitelist specific VendorIDs (e.g., YubiKey)
+whitelist = ["1050:0407"]
+
+[network]
+# Tor Transparent Proxy
+tor_mode = "manual" # 'always', 'manual', 'never'
+dns_over_https = true
+dns_provider = "cloudflare"

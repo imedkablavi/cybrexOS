@@ -1,0 +1,23 @@
+#!/bin/bash
+# cybrex-box: Application Sandbox Wrapper (Bubblewrap)
+# Usage: cybrex-box <command>
+
+if [ -z "$1" ]; then
+    echo "Usage: cybrex-box <command>"
+    exit 1
+fi
+
+# Define Sandbox Paths
+# Read-only system, empty /tmp, isolated /home
+bwrap \
+    --ro-bind / / \
+    --dev /dev \
+    --proc /proc \
+    --tmpfs /tmp \
+    --tmpfs /run \
+    --bind $HOME/Projects/Sec/malware-sandbox /home/sandbox \
+    --chdir /home/sandbox \
+    --unshare-all \
+    --share-net \
+    --die-with-parent \
+    "$@"

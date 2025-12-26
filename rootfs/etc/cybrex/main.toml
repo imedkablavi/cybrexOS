@@ -1,0 +1,17 @@
+# CybrexTech OS - Main Config
+
+[system]
+hostname = "cybrex-workstation"
+release_channel = "stable"
+owner_user = "owner"
+
+[ui]
+theme = "cybrex-dark-green"
+font_mono = "JetBrains Mono"
+scale_factor = 1
+
+[security]
+# Enforce USB blocking when screen is locked
+usb_guard = true
+# Route all traffic through Tor when "Paranoid Mode" is active
+tor_integration = true

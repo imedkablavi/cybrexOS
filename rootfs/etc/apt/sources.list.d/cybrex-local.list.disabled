@@ -1,0 +1,4 @@
+# CybrexTech OS - Private Repository
+# Location: /opt/cybrex/repo (Local) or HTTPS mirror
+
+deb [trusted=yes] file:/opt/cybrex/repo/ ./

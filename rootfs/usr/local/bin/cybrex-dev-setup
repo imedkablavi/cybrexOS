@@ -1,0 +1,58 @@
+#!/bin/bash
+# cybrex-dev-setup: Install Developer & Security Stack
+# This script is intended to be run by the user after first boot.
+
+set -e
+
+# Usage: ./cybrex-dev-setup [profile]
+# Profiles: web, backend, mobile, sec, full (default)
+
+PROFILE=${1:-full}
+echo "--- CybrexTech OS: Dev Setup ($PROFILE) ---"
+
+apt update
+
+function install_web() {
+    echo "[*] Installing Web Stack..."
+    apt install -y nodejs npm nginx
+    # Bun (Manual install usually, placeholder here)
+}
+
+function install_backend() {
+    echo "[*] Installing Backend Stack..."
+    apt install -y golang-go python3-full postgresql-client docker.io docker-compose
+}
+
+function install_sec() {
+    echo "[*] Installing Security Stack..."
+    apt install -y nmap wireshark tcpdump whois jq metasploit-framework
+}
+
+function install_base() {
+    echo "[*] Installing Base Dev Tools..."
+    apt install -y git curl wget build-essential vim htop
+}
+
+install_base
+
+case "$PROFILE" in
+    web)
+        install_web
+        ;;
+    backend)
+        install_backend
+        ;;
+    sec)
+        install_sec
+        ;;
+    full)
+        install_web
+        install_backend
+        install_sec
+        ;;
+    *)
+        echo "Unknown profile: $PROFILE. Installing Base only."
+        ;;
+esac
+
+echo "[SUCCESS] Environment '$PROFILE' Ready."

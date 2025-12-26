@@ -1,0 +1,23 @@
+# CybrexTech OS - Power Profiles
+# Location: /etc/cybrex/power.toml
+
+[saver]
+governor = "powersave"
+turbo_boost = false
+gpu_mode = "integrated"
+screen_brightness_cap = 50
+fan_profile = "silent"
+
+[balanced]
+governor = "schedutil"
+turbo_boost = true
+gpu_mode = "hybrid"
+screen_brightness_cap = 100
+fan_profile = "normal"
+
+[performance]
+governor = "performance"
+turbo_boost = true
+gpu_mode = "discrete"
+screen_brightness_cap = 100
+fan_profile = "max"

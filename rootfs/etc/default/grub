@@ -1,0 +1,20 @@
+# CybrexTech OS - GRUB Configuration
+# Enforcing Security and Speed
+
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=2
+GRUB_DISTRIBUTOR="CybrexTech"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash security=apparmor mitigations=auto,nosmt audit=1"
+GRUB_CMDLINE_LINUX=""
+
+# Visuals
+# Use console mode for text-only (minimal) or keep default for graphical
+GRUB_TERMINAL=console
+GRUB_GFXMODE=1024x768
+
+# Security
+# Disable recovery if needed, currently enabled for Dev Preview
+# GRUB_DISABLE_RECOVERY="true"
+
+# OS Prober disabled for security/isolation (Single Owner OS)
+GRUB_DISABLE_OS_PROBER=true

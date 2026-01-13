@@ -66,7 +66,7 @@ grub-efi-amd64
 
 Build Instructions
 bash
-Kodu kopyala
+
 sudo apt-get update
 sudo apt-get install -y \
   debootstrap qemu-utils parted dosfstools rsync util-linux
@@ -75,7 +75,7 @@ sudo bash build_scripts/build_vm.sh
 Optional environment variables:
 
 bash
-Kodu kopyala
+
 DEBIAN_SUITE=bookworm
 DISK_SIZE=20G
 HOSTNAME=cybrex-dev
@@ -114,8 +114,6 @@ GRUB root=UUID= matches /etc/fstab root UUID
 
 Results are written to:
 
-text
-Kodu kopyala
 build_vm/report.txt
 Networking
 The system uses:

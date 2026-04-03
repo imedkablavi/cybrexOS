@@ -280,9 +280,9 @@ else
 fi
 ensure_policy_rc_d "$MNT_DIR"
 
-log_info "[*] Installing systemd-resolved (inside chroot)..."
+log_info "[*] Installing systemd-resolved and logrotate (inside chroot)..."
 chroot "$MNT_DIR" apt-get update
-chroot "$MNT_DIR" apt-get install -y systemd-resolved
+chroot "$MNT_DIR" apt-get install -y systemd-resolved logrotate
 
 log_info "[*] Finalizing inside chroot..."
 chroot "$MNT_DIR" bash -c "echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && locale-gen"
@@ -302,8 +302,10 @@ ln -sf /run/systemd/resolve/stub-resolv.conf "$MNT_DIR/etc/resolv.conf"
 enable_if_exists "$MNT_DIR" systemd-networkd.service
 enable_if_exists "$MNT_DIR" systemd-resolved.service
 enable_if_exists "$MNT_DIR" ssh.service
+enable_if_exists "$MNT_DIR" nftables.service
 enable_if_exists "$MNT_DIR" cybrex-daemon.service
 enable_if_exists "$MNT_DIR" cybrex-demo.service
+enable_if_exists "$MNT_DIR" cybrex-update.timer
 
 log_info "[*] Installing GRUB (EFI)..."
 chroot "$MNT_DIR" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Cybrex --removable --recheck

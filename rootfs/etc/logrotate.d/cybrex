@@ -1,0 +1,13 @@
+/var/log/cybrex/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 root adm
+    sharedscripts
+    postrotate
+        systemctl kill --kill-who=main --signal=SIGHUP cybrex-daemon.service 2>/dev/null || true
+    endscript
+}

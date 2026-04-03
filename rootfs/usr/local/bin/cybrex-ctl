@@ -2,113 +2,293 @@
 # cybrex-ctl: Unified Control Interface for CybrexTech OS
 # Base: Debian Stable
 
-set -e
+set -uo pipefail
 
-VERSION="1.0.0-alpha"
+VERSION="1.1.0-alpha"
 CONFIG_DIR="/etc/cybrex"
-LOG_FILE="/var/log/cybrex/ctl.log"
+LOG_DIR="/var/log/cybrex"
+LOG_FILE="$LOG_DIR/ctl.log"
+POWER_STATE_FILE="/run/cybrex/power_profile"
 
 # --- Helpers ---
-function log() {
-    echo "[$(date +'%Y-%m-%dT%H:%M:%S')] $1" | tee -a $LOG_FILE
+log() {
+    mkdir -p "$LOG_DIR"
+    printf '[%s] %s\n' "$(date +'%Y-%m-%dT%H:%M:%S')" "$1" | tee -a "$LOG_FILE"
 }
 
-function check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        echo "Please run as root (sudo cybrex-ctl)"
+check_root() {
+    if [[ "$EUID" -ne 0 ]]; then
+        echo "Please run as root (sudo cybrex-ctl)" >&2
         exit 1
     fi
+}
+
+# Read a single key value from a flat TOML section.
+# Usage: toml_get <file> <section> <key>
+toml_get() {
+    local file="$1" section="$2" key="$3"
+    awk -v sec="[$section]" -v k="$key" '
+        $0 == sec { in_sec=1; next }
+        /^\[/ { in_sec=0 }
+        in_sec && $1 == k { gsub(/^[^=]+=[ \t]*/, ""); gsub(/^["'"'"']|["'"'"']$/, ""); print; exit }
+    ' "$file"
 }
 
 # --- Modules ---
 
-function sys_status() {
+sys_status() {
     echo "--- CybrexTech OS ($VERSION) ---"
-    echo "Kernel: $(uname -r)"
-    echo "Distro: $(lsb_release -d | cut -f2)"
-    echo "Uptime: $(uptime -p)"
-    echo "Load: $(cat /proc/loadavg | cut -d' ' -f1-3)"
-    
-    # Check services
-    systemctl is-active --quiet fail2ban && echo "Security: PROTECTED (Fail2Ban Active)" || echo "Security: WARNING"
+    echo "Kernel : $(uname -r)"
+    echo "Distro : $(lsb_release -ds 2>/dev/null || echo 'unknown')"
+    echo "Uptime : $(uptime -p)"
+    echo "Load   : $(cut -d' ' -f1-3 /proc/loadavg)"
+    echo "Memory : $(free -h | awk '/^Mem:/{printf "%s used / %s total", $3, $2}')"
+
+    local profile
+    profile=$(cat "$POWER_STATE_FILE" 2>/dev/null || echo 'balanced')
+    echo "Power  : $profile"
+
+    local fw_status="inactive"
+    nft list ruleset >/dev/null 2>&1 && fw_status="active"
+    echo "Firewall: $fw_status (nftables)"
+
+    local svc_ok=() svc_fail=()
+    for svc in cybrex-daemon nftables systemd-networkd systemd-resolved ssh; do
+        if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
+            svc_ok+=("$svc")
+        else
+            svc_fail+=("$svc")
+        fi
+    done
+    [[ ${#svc_ok[@]}   -gt 0 ]] && echo "Services OK  : ${svc_ok[*]}"
+    [[ ${#svc_fail[@]} -gt 0 ]] && echo "Services WARN: ${svc_fail[*]}"
 }
 
-function sys_update() {
+sys_update() {
     check_root
-    log "Starting Cybrex Update..."
-    
-    # 1. Snapshot
-    echo "[+] Creating Pre-Update Snapshot..."
-    btrfs subvolume snapshot / /snapshots/pre-update-$(date +%s)
-    
-    # 2. Update
-    echo "[+] Updating Repositories..."
-    apt update
-    echo "[+] Upgrading System..."
-    apt full-upgrade -y
-    echo "[+] Cleaning up..."
-    apt autoremove -y
-    
-    log "Update Completed Successfully."
+    local auto="${1:-}"
+    log "Starting Cybrex system update (auto=$auto)..."
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y -qq
+    apt-get autoremove -y -qq
+    apt-get clean
+    log "Update completed successfully."
+    echo "[+] System is up to date."
 }
 
-function power_profile() {
-    PROFILE=$1
-    if [ -z "$PROFILE" ]; then
+power_profile() {
+    local profile="${1:-}"
+    mkdir -p "$(dirname "$POWER_STATE_FILE")"
+
+    if [[ -z "$profile" ]]; then
         echo "[*] Current Power State:"
-        echo "    Governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo 'unknown')"
-        echo "    Profile: $(cat /var/run/cybrex/power_profile 2>/dev/null || echo 'default')"
-        return
-    fi
-    
-    check_root
-    
-    # Validation
-    if [[ ! "$PROFILE" =~ ^(saver|balanced|performance)$ ]]; then
-        echo "Error: Invalid profile. Use: saver, balanced, performance"
-        exit 1
+        local gov
+        gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo 'unknown')
+        echo "    Governor : $gov"
+        echo "    Profile  : $(cat "$POWER_STATE_FILE" 2>/dev/null || echo 'balanced')"
+        return 0
     fi
 
-    echo "[*] Loading Profile: $PROFILE"
-    
-    # Mocking config reading (In real impl, use a TOML parser)
-    # GOVERNOR=$(grep -A 5 "\[$PROFILE\]" /etc/cybrex/power.toml | grep "governor" | cut -d'"' -f2)
-    
-    # Apply Settings
-    echo "    -> Setting CPU Governor..."
-    # echo "$GOVERNOR" | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null
-    
-    echo "    -> Adjusting GPU Mode..."
-    # Implementation depends on hardware (optimus-manager, supergfxctl, etc.)
-    
-    echo "$PROFILE" > /var/run/cybrex/power_profile
-    log "Power profile switched to $PROFILE"
+    check_root
+
+    if [[ ! "$profile" =~ ^(saver|balanced|performance)$ ]]; then
+        echo "Error: Invalid profile. Use: saver, balanced, performance" >&2
+        return 1
+    fi
+
+    local toml_file="$CONFIG_DIR/power.toml"
+    local governor turbo
+    governor=$(toml_get "$toml_file" "$profile" governor)
+    turbo=$(toml_get "$toml_file" "$profile" turbo_boost)
+
+    echo "[*] Loading profile: $profile"
+
+    if [[ -n "$governor" && -d /sys/devices/system/cpu/cpu0/cpufreq ]]; then
+        echo "    -> Setting CPU governor: $governor"
+        for cpufreq_dir in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            [[ -f "$cpufreq_dir" ]] && echo "$governor" > "$cpufreq_dir" 2>/dev/null || true
+        done
+    fi
+
+    if [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+        if [[ "$turbo" == "false" ]]; then
+            echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || true
+        else
+            echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || true
+        fi
+        echo "    -> Turbo boost: $turbo"
+    fi
+
+    echo "$profile" > "$POWER_STATE_FILE"
+    log "Power profile switched to $profile"
+    echo "[+] Profile '$profile' applied."
 }
 
-function security_audit() {
-    echo "[*] Scanning for failed logins..."
-    journalctl -u sshd | grep "Failed password" | tail -n 5
-    echo "[*] Checking Firewall (NFTables)..."
-    nft list ruleset | head -n 10
+security_audit() {
+    echo "[*] === CybrexTech Security Audit ==="
+
+    echo ""
+    echo "[1] Recent failed SSH logins (last 24 h):"
+    journalctl -u ssh.service --since "24h ago" --no-pager -q 2>/dev/null \
+        | grep -i "failed password" | tail -n 10 \
+        || echo "    (no data or ssh not running)"
+
+    echo ""
+    echo "[2] NFTables ruleset (first 20 lines):"
+    nft list ruleset 2>/dev/null | head -n 20 \
+        || echo "    (nftables not active)"
+
+    echo ""
+    echo "[3] Open listening ports:"
+    ss -tlnp 2>/dev/null | tail -n +2 \
+        || echo "    (ss not available)"
+
+    echo ""
+    echo "[4] SUID/SGID binaries (outside /usr):"
+    find / -xdev \( -perm -4000 -o -perm -2000 \) -not -path '/usr/*' -print 2>/dev/null \
+        || true
+
+    echo ""
+    echo "[5] Users with sudo access:"
+    grep -rE '^[^#].*ALL.*ALL' /etc/sudoers /etc/sudoers.d/ 2>/dev/null || true
+}
+
+firewall_ctl() {
+    local action="${1:-status}"
+    case "$action" in
+        status)
+            echo "[*] NFTables firewall status:"
+            nft list ruleset 2>/dev/null || echo "    Firewall inactive (no ruleset loaded)."
+            ;;
+        reload)
+            check_root
+            if [[ -f /etc/nftables.conf ]]; then
+                nft -f /etc/nftables.conf
+                log "Firewall ruleset reloaded from /etc/nftables.conf"
+                echo "[+] Firewall reloaded."
+            else
+                echo "Error: /etc/nftables.conf not found." >&2
+                return 1
+            fi
+            ;;
+        flush)
+            check_root
+            nft flush ruleset
+            log "Firewall ruleset flushed (all rules removed)."
+            echo "[!] Firewall flushed — no rules active."
+            ;;
+        *)
+            echo "Usage: cybrex-ctl firewall {status|reload|flush}" >&2
+            return 1
+            ;;
+    esac
+}
+
+show_logs() {
+    local lines="${1:-50}"
+    echo "[*] Last $lines lines of cybrex ctl log:"
+    if [[ -f "$LOG_FILE" ]]; then
+        tail -n "$lines" "$LOG_FILE"
+    else
+        echo "    (no log file yet at $LOG_FILE)"
+    fi
+    echo ""
+    echo "[*] Daemon journal (last $lines lines):"
+    journalctl -u cybrex-daemon.service --no-pager -n "$lines" 2>/dev/null || true
+}
+
+health_check() {
+    local issues=0
+    echo "[*] === CybrexTech OS Health Check ==="
+
+    echo ""
+    echo "[Kernel]"
+    echo "  Version : $(uname -r)"
+    if [[ -f "/boot/vmlinuz-$(uname -r)" ]]; then
+        echo "  vmlinuz : OK"
+    else
+        echo "  vmlinuz : MISSING"
+        ((issues++)) || true
+    fi
+
+    echo ""
+    echo "[Disk]"
+    df -h / /boot 2>/dev/null || true
+
+    echo ""
+    echo "[Memory]"
+    free -h
+
+    echo ""
+    echo "[Services]"
+    local services=(cybrex-daemon nftables systemd-networkd systemd-resolved ssh)
+    for svc in "${services[@]}"; do
+        if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
+            echo "  $svc : running"
+        else
+            echo "  $svc : NOT running"
+            ((issues++)) || true
+        fi
+    done
+
+    echo ""
+    echo "[Sysctl Hardening]"
+    local hfail=0
+    declare -A expected_vals=(
+        ["kernel.yama.ptrace_scope"]="1"
+        ["kernel.dmesg_restrict"]="1"
+        ["net.ipv4.tcp_syncookies"]="1"
+        ["kernel.randomize_va_space"]="2"
+    )
+    for key in "${!expected_vals[@]}"; do
+        local expected="${expected_vals[$key]}"
+        local actual
+        actual=$(sysctl -n "$key" 2>/dev/null || echo "unavailable")
+        if [[ "$actual" == "$expected" ]]; then
+            echo "  $key : OK"
+        else
+            echo "  $key : WARN (got '$actual', expected '$expected')"
+            ((hfail++)) || true
+        fi
+    done
+
+    echo ""
+    if [[ $issues -eq 0 && $hfail -eq 0 ]]; then
+        echo "[RESULT] All checks passed. System is healthy."
+    else
+        echo "[RESULT] Issues found: $issues service(s) down, $hfail sysctl mismatch(es)."
+    fi
 }
 
 # --- Main Dispatcher ---
+usage() {
+    cat <<EOF
+Usage: cybrex-ctl <command> [options]
 
-case "$1" in
-    status)
-        sys_status
-        ;;
-    update)
-        sys_update
-        ;;
-    power)
-        power_profile $2
-        ;;
-    sec|security)
-        security_audit
-        ;;
+Commands:
+  status                        Show system overview
+  update [--auto]               Update OS packages
+  power [saver|balanced|performance]
+                                Get or set the CPU power profile
+  security                      Run a security audit
+  firewall [status|reload|flush]
+                                Manage NFTables firewall
+  logs [N]                      Show last N lines of cybrex logs (default: 50)
+  health                        Run a full system health check
+EOF
+}
+
+case "${1:-}" in
+    status)            sys_status ;;
+    update)            sys_update "${2:-}" ;;
+    power)             power_profile "${2:-}" ;;
+    sec|security)      security_audit ;;
+    firewall)          firewall_ctl "${2:-status}" ;;
+    logs)              show_logs "${2:-50}" ;;
+    health)            health_check ;;
+    -h|--help|help)    usage ;;
     *)
-        echo "Usage: cybrex-ctl {status|update|power [saver|balanced]|security}"
+        usage >&2
         exit 1
         ;;
 esac

@@ -1,0 +1,12 @@
+[Unit]
+Description=CybrexTech OS Automatic System Update
+Documentation=man:apt(8)
+After=network-online.target
+Wants=network-online.target
+ConditionACPower=true
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cybrex-ctl update --auto
+StandardOutput=journal
+StandardError=journal

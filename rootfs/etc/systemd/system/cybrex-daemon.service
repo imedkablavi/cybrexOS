@@ -1,14 +1,20 @@
 [Unit]
-Description=CybrexTech OS Control Daemon
+Description=CybrexTech OS Control Daemon (API server)
 Documentation=man:cybrex-ctl(1)
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/cybrex-ctl status
+ExecStart=/usr/bin/python3 /usr/local/bin/cybrex-daemon
 Restart=on-failure
+RestartSec=5
 User=root
 Group=root
+StandardOutput=journal
+StandardError=journal
+RuntimeDirectory=cybrex
+LogsDirectory=cybrex
 
 [Install]
 WantedBy=multi-user.target

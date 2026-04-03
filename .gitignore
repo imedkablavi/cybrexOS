@@ -1,0 +1,38 @@
+# Build artifacts
+build_vm/
+artifacts/
+iso_build/
+
+# Raw and converted disk images
+*.img
+*.vmdk
+*.iso
+*.raw
+
+# VMware runtime files
+*.nvram
+*.vmxf
+*.scoreboard
+*.vmem
+*.vmss
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Temporary files
+*.bak
+*.tmp
+/tmp/

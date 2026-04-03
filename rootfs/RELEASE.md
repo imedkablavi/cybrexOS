@@ -73,8 +73,10 @@ designed for high-security development and daily use.
 
 ### 3. Developer Experience
 - **Hyprland**: Pre-configured tiling WM with "Cybrex Green" aesthetics.
-- **Dev Stack**: Docker, Python, Go, Node.js ready via `cybrex-dev-setup`.
-- **Setup**: One-shot environment hydration (`cybrex-dev-setup [web|backend|sec|full]`).
+- **Dev Stack**: Docker, Python, Go, Node.js ready out-of-the-box.
+- **Setup**: One-shot environment hydration via `cybrex-dev-setup`.
+  - Profiles: `web`, `backend`, `mobile`, `sec`, `gaming`, `full`
+  - Includes optional gaming tooling such as Steam/Lutris/GameMode/MangoHud where available.
 
 ---
 

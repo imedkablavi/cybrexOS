@@ -22,6 +22,8 @@ CybrexTech OS is a custom, single-owner platform built on Debian Stable, designe
 - **Hyprland**: Pre-configured Tiling WM with "Cybrex Green" aesthetics.
 - **Dev Stack**: Docker, Python, Go, Node.js ready out-of-the-box.
 - **Setup**: One-shot environment hydration via `cybrex-dev-setup`.
+  - Profiles: `web`, `backend`, `mobile`, `sec`, `gaming`, `full`
+  - Includes optional gaming tooling such as Steam/Lutris/GameMode/MangoHud where available.
 
 ## Installation
 1.  Boot a live Debian/Ubuntu USB.

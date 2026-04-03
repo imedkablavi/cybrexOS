@@ -1,38 +1,99 @@
 #!/bin/bash
-# cybrex-dev-setup: Install Developer & Security Stack
+# cybrex-dev-setup: Install Developer, Security & Gaming Stack
 # This script is intended to be run by the user after first boot.
 
-set -e
+set -euo pipefail
 
 # Usage: ./cybrex-dev-setup [profile]
-# Profiles: web, backend, mobile, sec, full (default)
+# Profiles: web, backend, mobile, sec, gaming, full (default)
 
-PROFILE=${1:-full}
-echo "--- CybrexTech OS: Dev Setup ($PROFILE) ---"
-
-apt update
-
-function install_web() {
-    echo "[*] Installing Web Stack..."
-    apt install -y nodejs npm nginx
-    # Bun (Manual install usually, placeholder here)
+function usage() {
+    cat <<EOF
+Usage: cybrex-dev-setup [profile]
+Profiles:
+  web      Install web development tooling
+  backend  Install backend development tooling
+  mobile   Install Android/mobile tooling
+  sec      Install security tooling
+  gaming   Install gaming tooling
+  full     Install all of the above
+EOF
 }
 
-function install_backend() {
-    echo "[*] Installing Backend Stack..."
-    apt install -y golang-go python3-full postgresql-client docker.io docker-compose
+function check_root() {
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+        echo "Please run as root (sudo cybrex-dev-setup [profile])."
+        exit 1
+    fi
 }
 
-function install_sec() {
-    echo "[*] Installing Security Stack..."
-    apt install -y nmap wireshark tcpdump whois jq metasploit-framework
+function install_packages() {
+    local available=()
+    local missing=()
+    local pkg
+    for pkg in "$@"; do
+        if apt-cache show "$pkg" >/dev/null 2>&1; then
+            available+=("$pkg")
+        else
+            missing+=("$pkg")
+        fi
+    done
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "[!] Skipping unavailable packages: ${missing[*]}"
+    fi
+    if [ "${#available[@]}" -gt 0 ]; then
+        apt install -y --no-install-recommends "${available[@]}"
+    fi
 }
 
 function install_base() {
-    echo "[*] Installing Base Dev Tools..."
-    apt install -y git curl wget build-essential vim htop
+    echo "[*] Installing base tools..."
+    install_packages git curl wget ca-certificates build-essential vim htop tmux unzip
 }
 
+function install_web() {
+    echo "[*] Installing web stack..."
+    install_packages nodejs npm nginx
+}
+
+function install_backend() {
+    echo "[*] Installing backend stack..."
+    install_packages golang-go python3-full python3-pip postgresql-client docker.io docker-compose
+}
+
+function install_mobile() {
+    echo "[*] Installing mobile stack..."
+    install_packages adb fastboot openjdk-17-jdk gradle
+}
+
+function install_sec() {
+    echo "[*] Installing security stack..."
+    install_packages nmap wireshark tcpdump whois jq sqlmap
+}
+
+function install_gaming() {
+    echo "[*] Installing gaming stack..."
+    install_packages steam-installer lutris gamemode mangohud goverlay vkbasalt vulkan-tools mesa-utils
+}
+
+PROFILE=${1:-full}
+
+if [[ "$PROFILE" == "-h" || "$PROFILE" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ ! "$PROFILE" =~ ^(web|backend|mobile|sec|gaming|full)$ ]]; then
+    echo "Unknown profile: $PROFILE"
+    usage
+    exit 1
+fi
+
+check_root
+
+echo "--- CybrexTech OS: Setup ($PROFILE) ---"
+apt update
 install_base
 
 case "$PROFILE" in
@@ -42,17 +103,22 @@ case "$PROFILE" in
     backend)
         install_backend
         ;;
+    mobile)
+        install_mobile
+        ;;
     sec)
         install_sec
+        ;;
+    gaming)
+        install_gaming
         ;;
     full)
         install_web
         install_backend
+        install_mobile
         install_sec
-        ;;
-    *)
-        echo "Unknown profile: $PROFILE. Installing Base only."
+        install_gaming
         ;;
 esac
 
-echo "[SUCCESS] Environment '$PROFILE' Ready."
+echo "[SUCCESS] Environment '$PROFILE' ready."

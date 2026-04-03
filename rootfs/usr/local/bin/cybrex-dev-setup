@@ -1,58 +1,132 @@
 #!/bin/bash
-# cybrex-dev-setup: Install Developer & Security Stack
+# cybrex-dev-setup: Install Developer, Security, Mobile & Gaming stacks
 # This script is intended to be run by the user after first boot.
 
-set -e
+set -euo pipefail
 
-# Usage: ./cybrex-dev-setup [profile]
-# Profiles: web, backend, mobile, sec, full (default)
+usage() {
+    cat <<'EOF'
+Usage: cybrex-dev-setup [profile]
 
-PROFILE=${1:-full}
-echo "--- CybrexTech OS: Dev Setup ($PROFILE) ---"
+Profiles:
+  web      Install web stack
+  backend  Install backend stack
+  mobile   Install mobile development stack
+  sec      Install security stack
+  gaming   Install gaming stack
+  full     Install all supported stacks (default)
 
-apt update
+Options:
+  -h, --help  Show this help text
 
-function install_web() {
+Examples:
+  sudo cybrex-dev-setup
+  sudo cybrex-dev-setup gaming
+  sudo cybrex-dev-setup mobile
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ $# -gt 1 ]]; then
+    echo "[ERROR] Too many arguments." >&2
+    usage
+    exit 1
+fi
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "[ERROR] This script must be run as root (use sudo)." >&2
+    exit 1
+fi
+
+PROFILE="${1:-full}"
+
+install_packages() {
+    local available=()
+    local pkg
+    for pkg in "$@"; do
+        if apt-cache show "${pkg}" >/dev/null 2>&1; then
+            available+=("${pkg}")
+        else
+            echo "[WARN] Package '${pkg}' is not available in current repositories. Skipping."
+        fi
+    done
+
+    if [[ "${#available[@]}" -gt 0 ]]; then
+        apt install -y "${available[@]}"
+    fi
+}
+
+install_web() {
     echo "[*] Installing Web Stack..."
-    apt install -y nodejs npm nginx
-    # Bun (Manual install usually, placeholder here)
+    install_packages nodejs npm nginx
 }
 
-function install_backend() {
+install_backend() {
     echo "[*] Installing Backend Stack..."
-    apt install -y golang-go python3-full postgresql-client docker.io docker-compose
+    install_packages golang-go python3-full python3-pip postgresql-client docker.io docker-compose
 }
 
-function install_sec() {
+install_mobile() {
+    echo "[*] Installing Mobile Stack..."
+    install_packages android-sdk adb fastboot openjdk-17-jdk gradle
+}
+
+install_sec() {
     echo "[*] Installing Security Stack..."
-    apt install -y nmap wireshark tcpdump whois jq metasploit-framework
+    install_packages nmap wireshark tcpdump whois jq sqlmap
 }
 
-function install_base() {
-    echo "[*] Installing Base Dev Tools..."
-    apt install -y git curl wget build-essential vim htop
+install_gaming() {
+    echo "[*] Installing Gaming Stack..."
+    install_packages steam-installer lutris gamemode mangohud vulkan-tools mesa-vulkan-drivers
 }
+
+install_base() {
+    echo "[*] Installing Base Dev Tools..."
+    install_packages git curl wget build-essential vim htop tmux unzip ca-certificates
+}
+
+case "${PROFILE}" in
+    web|backend|mobile|sec|gaming|full) ;;
+    *)
+        echo "[ERROR] Unknown profile: ${PROFILE}" >&2
+        usage
+        exit 1
+        ;;
+esac
+
+echo "--- CybrexTech OS: Dev Setup (${PROFILE}) ---"
+apt update
 
 install_base
 
-case "$PROFILE" in
+case "${PROFILE}" in
     web)
         install_web
         ;;
     backend)
         install_backend
         ;;
+    mobile)
+        install_mobile
+        ;;
     sec)
         install_sec
+        ;;
+    gaming)
+        install_gaming
         ;;
     full)
         install_web
         install_backend
+        install_mobile
         install_sec
-        ;;
-    *)
-        echo "Unknown profile: $PROFILE. Installing Base only."
+        install_gaming
         ;;
 esac
 
-echo "[SUCCESS] Environment '$PROFILE' Ready."
+echo "[SUCCESS] Environment '${PROFILE}' Ready."

@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule CybrexOS CI boot qualification after normal boot
+
+[Timer]
+OnBootSec=5s
+AccuracySec=1s
+Unit=cybrex-ci-smoke.service
+
+[Install]
+WantedBy=timers.target

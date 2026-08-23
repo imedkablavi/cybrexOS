@@ -1,0 +1,127 @@
+name: Release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        default: alpha
+        options:
+          - alpha
+          - beta
+          - stable
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  release-candidate:
+    name: Build, qualify and attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve release channel
+        id: channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            case "$GITHUB_REF_NAME" in
+              v*-alpha.*) channel=alpha ;;
+              v*-beta.*) channel=beta ;;
+              v[0-9]*.[0-9]*.[0-9]*) channel=stable ;;
+              *) echo "Unsupported release tag: $GITHUB_REF_NAME" >&2; exit 1 ;;
+            esac
+          else
+            channel='${{ inputs.channel }}'
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "Release channel: $channel"
+
+      - name: Static release contracts
+        run: bash tests/release_contracts.sh
+
+      - name: Install build and VM dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap parted dosfstools rsync util-linux qemu-utils \
+            qemu-system-x86 ovmf
+
+      - name: Build qualification image
+        run: |
+          sudo env \
+            GITHUB_SHA="$GITHUB_SHA" \
+            CYBREX_CI_SMOKE=1 \
+            SKIP_VMDK=1 \
+            DISK_SIZE=4G \
+            BUILD_CHANNEL='${{ steps.channel.outputs.channel }}' \
+            bash build_scripts/build_vm.sh
+
+      - name: QEMU OVMF qualification
+        run: sudo bash ci/smoke_boot_qemu.sh build_vm/CybrexTech_Dev_Preview.img
+
+      - name: Preserve qualification serial evidence
+        run: sudo cp build_vm/qemu-boot.log /tmp/cybrex-qemu-boot.log
+
+      - name: Build clean release artifact
+        run: |
+          sudo env \
+            GITHUB_SHA="$GITHUB_SHA" \
+            CYBREX_CI_SMOKE=0 \
+            SKIP_VMDK=0 \
+            DISK_SIZE=8G \
+            BUILD_CHANNEL='${{ steps.channel.outputs.channel }}' \
+            bash build_scripts/build_vm.sh
+          sudo cp /tmp/cybrex-qemu-boot.log artifacts/qualification-qemu-boot.log
+          sudo cp CybrexTech_Dev_Preview.vmx artifacts/CybrexTech_Dev_Preview.vmx
+          sudo chown -R "$(id -u):$(id -g)" artifacts
+          (
+            cd artifacts
+            sha256sum CybrexTech_Dev_Preview.vmx qualification-qemu-boot.log >> SHA256SUMS
+          )
+
+      - name: Verify generated checksums
+        env:
+          VERIFY_PROVENANCE: '0'
+        run: bash release/verify-release.sh artifacts
+
+      - name: Create signed build provenance
+        id: attest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: artifacts/CybrexTech_Dev_Preview.vmdk
+
+      - name: Verify provenance from consumer tooling
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFY_PROVENANCE: '1'
+        run: bash release/verify-release.sh artifacts
+
+      - name: Upload release candidate bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybrexOS-${{ steps.channel.outputs.channel }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            artifacts/CybrexTech_Dev_Preview.vmdk
+            artifacts/CybrexTech_Dev_Preview.vmx
+            artifacts/cybrexOS.spdx
+            artifacts/packages.tsv
+            artifacts/build-report.txt
+            artifacts/REPRODUCIBILITY.md
+            artifacts/SHA256SUMS
+            artifacts/qualification-qemu-boot.log

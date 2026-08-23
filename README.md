@@ -1,202 +1,209 @@
-# CybrexOS – Debian-Based VM Image Build Pipeline
+# CybrexOS
 
-CybrexOS is a **custom Debian-based Linux OS build pipeline** designed to produce
-bootable virtual machine images for **VMware (EFI)**.
+CybrexOS is an **alpha Debian-based OS image build pipeline** with a security-oriented
+rootfs overlay and explicit release qualification gates.
 
-The project focuses on:
-- Correct boot chain (GRUB EFI + kernel + initramfs)
-- Clean root filesystem construction
-- Deterministic and inspectable image builds
-- Safety-first build scripting (no global destructive operations)
-- Security-hardened kernel and firewall out of the box
+The release-engineering focus is evidence: a build is not called boot-qualified merely
+because GRUB files exist. CI builds a fresh image, boots it under QEMU + OVMF, and checks
+systemd, networking and the live nftables policy from inside the guest.
 
-> ⚠️ Project status: **ALPHA**
-> This repository is under active development and not yet production-ready.
+> **Status: ALPHA.** Automated qualification currently covers one amd64 QEMU/OVMF VM
+> configuration. Bare-metal hardware, VMware, Secure Boot and the live ISO have separate
+> status and must not inherit compatibility claims from the QEMU result.
 
----
+## Qualified scope
 
-## What This Project Builds
+Automated CI currently targets:
 
-- **Raw disk image** (GPT, EFI + root partition)
-- **VMware VMDK** converted from raw image
-- **VMX configuration** (EFI, auto-updated to reference the built VMDK)
+- architecture: amd64/x86_64;
+- firmware: OVMF UEFI;
+- machine: QEMU `q35` under TCG;
+- disk: virtio-blk;
+- network: virtio-net + QEMU user-mode networking;
+- base: Debian bookworm;
+- init/service manager: systemd;
+- network stack: systemd-networkd + systemd-resolved;
+- firewall: nftables with `cybrex_fw` inbound `drop` and outbound `accept` policies.
 
-The system is based on:
-- Debian **bookworm**
-- Debian kernel (`linux-image-amd64`)
-- systemd, GRUB EFI, systemd-networkd, systemd-resolved
-- nftables (deny-all-inbound firewall, enabled on boot)
-- Hardened kernel via `/etc/sysctl.d/99-cybrex-hardening.conf`
+See [Boot Qualification](docs/BOOT_QUALIFICATION.md) for the exact pass/fail contract.
 
-No ISO installer is currently produced.
+## What the VM builder produces
 
----
-
-## Repository Structure
+`build_scripts/build_vm.sh` creates:
 
 ```text
-.
-├── build_scripts/        # Main build pipeline (VM image)
-│   ├── build_vm.sh       # Primary deterministic VM builder
-│   ├── build_iso.sh      # Live ISO builder (live-build, WIP)
-│   ├── install_base.sh   # Arch-based bare-metal installer
-│   └── install_cybrex.sh # Debian bare-metal installer (LUKS + Btrfs)
-├── rootfs/               # Root filesystem overlay (configs, services, binaries)
-│   ├── etc/cybrex/       # Centralised TOML configuration
-│   ├── etc/nftables.conf # Firewall ruleset (deny-all inbound)
-│   ├── etc/sysctl.d/     # Kernel hardening parameters
-│   ├── etc/logrotate.d/  # Log rotation for /var/log/cybrex/
-│   ├── etc/systemd/      # Custom systemd units & network config
-│   └── usr/local/bin/    # cybrex-ctl, cybrex-daemon, dev tools
-├── .gitignore
-└── README.md
+build_vm/
+├── CybrexTech_Dev_Preview.img   # raw GPT/UEFI image
+└── report.txt                   # static image-verification report
+
+artifacts/
+├── CybrexTech_Dev_Preview.vmdk  # omitted when SKIP_VMDK=1
+├── cybrexOS.spdx                # SPDX 2.3 package SBOM
+├── packages.tsv                 # installed Debian package manifest
+├── REPRODUCIBILITY.md           # build reproducibility status
+├── build-report.txt
+└── SHA256SUMS
 ```
 
-Generated artifacts (`build_vm/`, `artifacts/`, `*.img`, `*.vmdk`) are not tracked in git.
+A normal VMDK build also writes `CybrexTech_Dev_Preview.vmx` in the repository root.
+Release workflows copy it into the release bundle and checksum it.
 
----
+## Local VM build
 
-## Requirements
-
-**Host system:**
-- Linux (tested on WSL2)
-- Root privileges
-
-**Required tools:**
-- `debootstrap`
-- `qemu-utils`
-- `parted`
-- `dosfstools`
-- `rsync`
-- `util-linux` (`losetup`, `mount`)
-- `grub-efi-amd64`
-- `logrotate`
-
----
-
-## Build Instructions
+On a Debian/Ubuntu build host with root privileges:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  debootstrap qemu-utils parted dosfstools rsync util-linux logrotate
-
+  debootstrap qemu-utils parted dosfstools rsync util-linux
 sudo bash build_scripts/build_vm.sh
 ```
 
-**Optional environment variables:**
+Development defaults remain `USERNAME=cybrex` and `VM_PASSWORD=cybrex`; override the
+password for any non-disposable image.
+
+More detail: [VM Build and Test Guide](docs/VM.md).
+
+## Automated boot qualification
+
+The pull-request and `main` CI path:
+
+1. runs static release contract tests;
+2. builds a fresh 4 GiB raw image with a CI-only systemd probe;
+3. boots the raw image with QEMU `q35` + OVMF;
+4. waits for systemd and DHCP with bounded timeouts;
+5. verifies `systemd-networkd`, `systemd-resolved` and `nftables` are active;
+6. verifies global IPv4 plus a default route;
+7. verifies the loaded nftables inbound policy is `drop` and outbound is `accept`;
+8. fails if any systemd unit is left failed;
+9. requires the exact serial marker `CYBREX_SMOKE:PASS`.
+
+Qualification logs and build metadata are uploaded even when the workflow fails.
+
+## Release integrity
+
+A release candidate workflow performs a QEMU qualification build first, then builds a
+clean release image from the same commit without the CI poweroff probe.
+
+The clean release bundle includes:
+
+- SHA256 checksums;
+- SPDX 2.3 SBOM;
+- sorted Debian package manifest;
+- build report;
+- explicit reproducibility report;
+- QEMU qualification serial evidence;
+- GitHub signed build-provenance attestation for the VMDK.
+
+Consumer verification:
 
 ```bash
-DEBIAN_SUITE=bookworm
-DISK_SIZE=20G
-HOSTNAME=cybrex-dev
-USERNAME=cybrex
-SKIP_GUI=1
+bash release/verify-release.sh artifacts
 ```
 
----
+The helper verifies `SHA256SUMS` and uses `gh attestation verify` for the published
+VMDK provenance.
 
-## Build Outputs
+## Reproducible builds
 
-After a successful build:
+CybrexOS **does not currently claim bit-for-bit reproducible images**. The build records
+inputs and generates deterministic package ordering, but Debian repositories are not yet
+pinned to immutable snapshots and filesystem/GRUB/initramfs metadata can vary between
+runs.
+
+Every build emits `artifacts/REPRODUCIBILITY.md` with this limitation. Reproducibility
+must be proven by two clean, snapshot-pinned builds with identical artifact hashes before
+the project changes that claim.
+
+## ISO status
+
+`build_scripts/build_iso.sh` now has explicit `configure`, `build` and `clean` modes and
+injects the tracked Debian rootfs overlay. It can build **experimental** live media when
+`live-build` is installed:
+
+```bash
+sudo build_scripts/build_iso.sh configure
+sudo build_scripts/build_iso.sh build
+```
+
+The ISO is not currently part of the qualified release bundle. It does not auto-run the
+bare-metal installer.
+
+## Bare-metal installer safety
+
+Bare metal is **NOT QUALIFIED**.
+
+The previous hardcoded `/dev/nvme0n1` and `/dev/sda` destructive paths have been removed
+from executable release behavior:
+
+- the legacy Arch installer is disabled;
+- the Debian installer is a fail-closed preflight tool;
+- no default disk exists;
+- the running root disk and mounted targets are rejected when detected;
+- destructive execution remains disabled pending a disposable-disk and hardware test
+  matrix.
+
+See [Bare-Metal Installation Status](docs/BARE_METAL.md).
+
+## Secure Boot
+
+Secure Boot is **design-only, not a current compatibility claim**. The
+`cybrex-secureboot` helper is inspection-only and will not create/enroll firmware keys.
+
+The design, key-management boundary, OVMF negative tests and future hardware gates are
+in [Secure Boot Design](docs/SECURE_BOOT.md).
+
+## Release channels
+
+CybrexOS defines `alpha`, `beta` and `stable` as evidence gates, not marketing labels.
+Stable requires stronger installer, provenance, reproducibility and hardware evidence
+than alpha.
+
+See [Release Channels](docs/RELEASE_CHANNELS.md).
+
+## Rootfs security baseline
+
+The tracked overlay includes:
+
+- `/etc/nftables.conf` with deny-by-default inbound filtering;
+- `/etc/sysctl.d/99-cybrex-hardening.conf`;
+- custom systemd units and network configuration;
+- `cybrex-ctl` control tooling;
+- `cybrex-daemon` local control service;
+- log rotation and update timer definitions.
+
+The VM builder normalizes tracked service/network/firewall text files before installation
+and explicitly enables the required network/resolver/firewall services.
+
+## Repository layout
 
 ```text
-build_vm/
- └── report.txt           # Build & verification report
-
-artifacts/
- └── CybrexTech_Dev_Preview.vmdk
+.
+├── .github/workflows/
+│   ├── boot-smoke.yml       # PR/main QEMU+OVMF qualification
+│   └── release.yml          # release candidate, checksums and provenance
+├── build_scripts/
+│   ├── build_vm.sh
+│   ├── build_iso.sh
+│   ├── install_cybrex.sh    # fail-closed bare-metal preflight
+│   └── install_base.sh      # disabled legacy installer
+├── ci/
+│   ├── guest-smoke.sh
+│   ├── cybrex-ci-smoke.service
+│   └── smoke_boot_qemu.sh
+├── docs/
+│   ├── BOOT_QUALIFICATION.md
+│   ├── VM.md
+│   ├── BARE_METAL.md
+│   ├── SECURE_BOOT.md
+│   └── RELEASE_CHANNELS.md
+├── release/verify-release.sh
+├── tests/release_contracts.sh
+└── rootfs/
 ```
 
-The VMX file is automatically updated to reference the generated VMDK.
+## Compatibility statement
 
----
-
-## Kernel & Boot Validation
-
-During the build verification stage, the pipeline validates:
-
-- Presence of `/boot/vmlinuz-*`, `/boot/initrd.img-*`, `/lib/modules/<kernel-version>/`
-- GRUB configuration contains explicit `linux` and `initrd` lines
-- GRUB `root=UUID=` matches `/etc/fstab` root UUID
-
-Results are written to `build_vm/report.txt`.
-
----
-
-## Networking
-
-The system uses:
-- `systemd-networkd` (DHCP by default, matches `en*`, `eth*`, `ens*`, `enp*`, `eno*`, `wl*`)
-- `systemd-resolved` with stub resolver
-- A default DHCP `.network` file is created if none exists
-
----
-
-## Security
-
-**Active baseline:**
-- ✅ SSH enabled (inbound SSH port closed by default firewall; open manually if needed)
-- ✅ `nftables` deny-all-inbound firewall — enabled on boot
-- ✅ Kernel hardening via `sysctl.d/99-cybrex-hardening.conf` (ASLR, SYN cookies,
-  ptrace restriction, dmesg restriction, kptr restriction, etc.)
-- ✅ `cybrex-ctl security` — live audit: failed logins, open ports, SUID binaries
-- ✅ `cybrex-box` — bubblewrap sandbox wrapper for untrusted apps
-
-**Planned:**
-- ☐ Secure Boot (sbctl key enrollment — helper script exists: `cybrex-secureboot`)
-- ☐ CI-based smoke boot testing
-- ☐ Artifact signing & SBOM
-
----
-
-## Control Layer (`cybrex-ctl`)
-
-```text
-cybrex-ctl status                          – System overview
-cybrex-ctl update                          – Full package upgrade
-cybrex-ctl power [saver|balanced|performance]
-                                           – Get or apply CPU power profile
-cybrex-ctl security                        – Security audit
-cybrex-ctl firewall [status|reload|flush]  – Manage nftables
-cybrex-ctl logs [N]                        – Show last N cybrex log lines
-cybrex-ctl health                          – Full health check
-```
-
----
-
-## Daemon API (`cybrex-daemon`)
-
-The `cybrex-daemon` systemd service runs a lightweight Python HTTP API on port **3001**:
-
-| Method | Path         | Description                                      |
-|--------|--------------|--------------------------------------------------|
-| GET    | `/api/state` | Full JSON system state (power, security, system) |
-| GET    | `/api/health`| Liveness probe `{"status":"ok"}`                 |
-| POST   | `/api/power` | Switch power profile `{"profile":"balanced"}`    |
-
----
-
-## Auto-Update
-
-A weekly systemd timer (`cybrex-update.timer`) triggers `cybrex-ctl update --auto`
-to keep the system current. It is enabled during the build.
-
----
-
-## Project Status
-
-| Feature                              | Status      |
-|--------------------------------------|-------------|
-| Kernel installation                  | ✅ Done     |
-| Boot (manual verification)           | ✅ Done     |
-| nftables firewall (enabled on boot)  | ✅ Done     |
-| Kernel sysctl hardening              | ✅ Done     |
-| Log rotation (`logrotate.d/cybrex`)  | ✅ Done     |
-| cybrex-ctl (full featured)           | ✅ Done     |
-| cybrex-daemon API (health + POST)    | ✅ Done     |
-| Weekly auto-update timer             | ✅ Done     |
-| Automated smoke boot                 | ❌ Planned  |
-| Reproducible builds                  | ⚠️ Partial  |
-| CI/CD                                | ❌ Planned  |
-| Secure Boot enrollment               | ❌ Planned  |
+Only the automated QEMU/OVMF configuration described above is continuously qualified by
+this repository. Any additional hypervisor or physical-hardware compatibility statement
+must link to separate test evidence.

@@ -71,7 +71,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            debootstrap parted dosfstools rsync util-linux qemu-utils \
+            debootstrap debian-archive-keyring parted dosfstools e2fsprogs rsync util-linux qemu-utils \
             qemu-system-x86 ovmf
 
       - name: Build qualification image

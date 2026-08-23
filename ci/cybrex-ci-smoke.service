@@ -1,11 +1,14 @@
 [Unit]
-Description=CybrexOS CI boot qualification probe
-After=multi-user.target systemd-networkd.service systemd-resolved.service nftables.service
+Description=Schedule CybrexOS CI boot qualification probe
+After=systemd-networkd.service systemd-resolved.service nftables.service
 Wants=systemd-networkd.service systemd-resolved.service nftables.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/libexec/cybrex-ci-smoke
-TimeoutStartSec=150
+ExecStart=/usr/bin/systemd-run --unit=cybrex-ci-smoke-probe --on-active=5s /usr/local/libexec/cybrex-ci-smoke
+RemainAfterExit=yes
 StandardOutput=journal+console
 StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

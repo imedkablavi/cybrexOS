@@ -1,106 +1,76 @@
-# CybrexTech OS – Release Notes
+# CybrexOS – Alpha Release Notes
 
-**Version**: 1.1.0-alpha
-**Codename**: Obsidian Green
+**Channel:** alpha  
+**Base:** Debian bookworm / amd64 VM image  
+**Compatibility claim:** QEMU + OVMF only when the candidate commit's boot-qualification workflow passes
 
----
+## Release-engineering changes
 
-## Overview
+This alpha introduces a real boot qualification gate rather than relying only on static
+image inspection.
 
-CybrexTech OS is a custom, single-owner platform built on Debian Stable,
-designed for high-security development and daily use.
+- Fresh raw images can be booted under QEMU `q35` with OVMF UEFI in CI.
+- An in-guest systemd probe verifies systemd state, systemd-networkd,
+  systemd-resolved, DHCP/default route and the live nftables policy.
+- Qualification requires a serial `CYBREX_SMOKE:PASS` marker.
+- Loop devices and mounts are cleaned from the VM build on normal exit and failures.
+- The VM builder emits an SPDX 2.3 package SBOM, package manifest, SHA256 checksums,
+  build report and an explicit reproducibility report.
+- Release-candidate automation creates signed GitHub build provenance for the VMDK and
+  verifies it with consumer-facing `gh attestation verify` tooling.
+- Release channels `alpha`, `beta` and `stable` now have documented promotion gates.
 
----
+## Reproducibility status
 
-## What's New in v1.1.0
+Byte-for-byte reproducibility is **not yet qualified**. Debian package sources are not
+pinned to immutable snapshots, and filesystem/GRUB/initramfs/VMDK metadata can vary.
+Each build emits `artifacts/REPRODUCIBILITY.md` rather than claiming identical hashes
+across independent builds.
 
-### Security
-- **Kernel hardening**: `/etc/sysctl.d/99-cybrex-hardening.conf` is now shipped
-  and applied on every boot via `systemd-sysctl`.  Covers network hardening
-  (SYN cookies, martian logging, no IP forwarding), memory protections
-  (ASLR full, ptrace restrict, kptr restrict, dmesg restrict), and more.
-- **nftables enabled on boot**: `nftables.service` is now explicitly enabled
-  during image build so the deny-all-inbound ruleset is active from first boot.
+## ISO status
 
-### Control Layer
-- `cybrex-ctl` upgraded to **v1.1.0**:
-  - `power [saver|balanced|performance]`: now *actually* writes the CPU frequency
-    governor and toggles Intel P-State turbo boost from `/etc/cybrex/power.toml`.
-  - `firewall [status|reload|flush]`: new sub-command to inspect, reload or flush
-    the nftables ruleset.
-  - `logs [N]`: tail the cybrex ctl log and the daemon journal.
-  - `health`: comprehensive health check — kernel, disk, memory, services,
-    and sysctl hardening validation.
-  - `security`: expanded audit — failed SSH logins, open ports, SUID binaries,
-    sudo grants.
-  - Removed `set -e` global flag (replaced with `set -uo pipefail`) to prevent
-    early exits from non-fatal read operations.
+The live-build script now has explicit configure/build/clean modes and injects the
+tracked Debian rootfs overlay. The resulting ISO remains **experimental** and is excluded
+from the qualified release bundle until it receives its own UEFI boot matrix and the
+installer is qualified.
 
-### Daemon
-- `cybrex-daemon` rewritten with proper endpoints:
-  - `GET /api/health` – liveness probe.
-  - `POST /api/power` – switch power profile via the daemon API.
-  - Config refresh interval reduced to 5 s.
-  - Uses `BaseHTTPRequestHandler` with explicit Content-Length for correct
-    HTTP/1.1 compliance.
-- `cybrex-daemon.service` fixed: was incorrectly running `cybrex-ctl status`;
-  now correctly runs `/usr/bin/python3 /usr/local/bin/cybrex-daemon`.
+## Bare-metal status
 
-### Maintenance
-- **Log rotation**: `/etc/logrotate.d/cybrex` — daily rotation, 14-day retention,
-  compressed, with post-rotate daemon SIGHUP.
-- **Auto-update timer**: `cybrex-update.service` + `cybrex-update.timer` provide
-  weekly unattended upgrades (enabled during image build).
-- **`.gitignore`** added: excludes `build_vm/`, `artifacts/`, `*.img`, `*.vmdk`,
-  `*.iso`, VMware runtime files, Python bytecode, and editor noise.
-- Removed stale `cybrex-ctl.bak` file.
+Bare-metal installation is **not qualified**. The previous hardcoded-disk destructive
+paths have been removed from executable release behavior:
 
----
+- `install_base.sh` is disabled as a legacy unqualified path.
+- `install_cybrex.sh` is fail-closed preflight only.
+- No default target disk is selected.
+- The destructive phase remains disabled until disposable-disk and hardware testing is
+  documented.
 
-## Key Features
+Do not infer physical hardware compatibility from a QEMU result.
 
-### 1. Unified Control Layer
-- **CLI**: `cybrex-ctl` — status, update, power, security, firewall, logs, health.
-- **API**: `cybrex-daemon` on port 3001 — `/api/state`, `/api/health`, `/api/power`.
-- **Config**: Centralised TOML in `/etc/cybrex/` (main, power, security).
+## Secure Boot status
 
-### 2. Security by Default
-- **Firewall**: Deny-all-inbound nftables policy (`/etc/nftables.conf`), enabled on boot.
-- **Kernel hardening**: sysctl parameters covering network, memory, and kernel hardening.
-- **Isolation**: Apps can be run in disposable sandboxes via `cybrex-box` (bubblewrap).
-- **Boot**: Secure Boot helper available (`cybrex-secureboot`), enrollment planned.
-- **Audit**: Pre-installed security stack (Nmap, Wireshark) + live audit via `cybrex-ctl security`.
+Secure Boot remains **design-only**. The `cybrex-secureboot` helper is inspection-only
+and does not create or enroll firmware keys. The design and required positive/negative
+OVMF tests are documented in `docs/SECURE_BOOT.md`.
 
-### 3. Developer Experience
-- **Hyprland**: Pre-configured tiling WM with "Cybrex Green" aesthetics.
-- **Dev Stack**: Docker, Python, Go, Node.js ready out-of-the-box.
-- **Setup**: One-shot environment hydration via `cybrex-dev-setup`.
-  - Profiles: `web`, `backend`, `mobile`, `sec`, `gaming`, `full`
-  - Includes optional gaming tooling such as Steam/Lutris/GameMode/MangoHud where available.
+## Security baseline in the image
 
----
+The tracked rootfs still includes:
 
-## Installation
+- nftables deny-by-default inbound rules;
+- sysctl hardening configuration;
+- systemd-networkd/systemd-resolved configuration;
+- `cybrex-ctl` and `cybrex-daemon` components;
+- log rotation and update timer definitions.
 
-1. Boot a live Debian/Ubuntu USB.
-2. Mount your dedicated NVMe drive.
-3. Run: `sudo bash build_scripts/install_cybrex.sh`
-4. Reboot and run `sudo cybrex-secureboot` to enroll keys.
+The automated boot gate verifies the network/resolver/firewall services and loaded
+firewall policy. Other feature claims require their own tests and should not be inferred
+from this boot qualification.
 
-Or for VM:
-```bash
-sudo bash build_scripts/build_vm.sh
-```
+## Documentation
 
----
-
-## Post-Install First Steps
-
-```bash
-cybrex-ctl health          # verify all services and hardening
-cybrex-ctl status          # overview
-sudo cybrex-ctl power balanced
-sudo cybrex-ctl firewall status
-```
-
-Edit `/etc/cybrex/main.toml` to customise your owner profile.
+- VM build/test: `docs/VM.md`
+- Boot qualification report: `docs/BOOT_QUALIFICATION.md`
+- Bare metal: `docs/BARE_METAL.md`
+- Secure Boot design: `docs/SECURE_BOOT.md`
+- Release channels: `docs/RELEASE_CHANNELS.md`

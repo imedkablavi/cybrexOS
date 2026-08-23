@@ -15,9 +15,12 @@ emit() {
 }
 
 fail() {
-    emit "CYBREX_SMOKE:FAIL:$*"
-    sync || true
-    systemctl --no-block poweroff || true
+    local reason="$*"
+    trap - ERR
+    set +e
+    emit "CYBREX_SMOKE:FAIL:$reason"
+    sync
+    systemctl --no-block poweroff
     exit 1
 }
 
@@ -26,7 +29,8 @@ trap 'fail "unexpected-error-line-$LINENO"' ERR
 emit "CYBREX_SMOKE:BEGIN"
 emit "CYBREX_SMOKE:KERNEL:$(uname -r)"
 
-# Give systemd a bounded amount of time to finish normal boot jobs.
+# Give systemd a bounded amount of time to finish normal boot jobs. The probe is
+# launched by a transient timer, so it is not itself part of the boot transaction.
 for _ in $(seq 1 60); do
     state="$(systemctl is-system-running 2>/dev/null || true)"
     case "$state" in
@@ -70,4 +74,4 @@ fi
 
 emit "CYBREX_SMOKE:PASS"
 sync
-systemctl --no-block poweroff
+systemctl --no-block poweroff || fail "poweroff-request-failed"

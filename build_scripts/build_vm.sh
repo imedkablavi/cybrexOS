@@ -7,15 +7,14 @@ IFS=$'\n\t'
 log_ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log_info() { printf '[%s] [INFO] %s\n' "$(log_ts)" "$*"; }
 log_warn() { printf '[%s] [WARN] %s\n' "$(log_ts)" "$*" >&2; }
-log_err()  { printf '[%s] [ERR ] %s\n' "$(log_ts)" "$*" >&2; }
-fatal()    { log_err "$*"; exit 1; }
+log_err() { printf '[%s] [ERR ] %s\n' "$(log_ts)" "$*" >&2; }
+fatal() { log_err "$*"; exit 1; }
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACTS_DIR="$ROOT_DIR/artifacts"
 BUILD_DIR="$ROOT_DIR/build_vm"
 MNT_DIR="$BUILD_DIR/mnt"
 VERIFY_MNT="$BUILD_DIR/verify"
-LOG_DIR="$BUILD_DIR/logs"
 REPORT_FILE="$BUILD_DIR/report.txt"
 IMAGE_RAW="$BUILD_DIR/CybrexTech_Dev_Preview.img"
 VMDK_PATH="$ARTIFACTS_DIR/CybrexTech_Dev_Preview.vmdk"
@@ -47,19 +46,44 @@ case "$BUILD_CHANNEL" in
     *) fatal "BUILD_CHANNEL must be alpha, beta, or stable" ;;
 esac
 
-require_root() { [[ $EUID -eq 0 ]] || fatal "Run as root (sudo)."; }
+require_root() {
+    [[ $EUID -eq 0 ]] || fatal "Run as root (sudo)."
+}
+
+# findmnt's normal recursive display contains tree-drawing prefixes. Always request
+# raw output before passing TARGET values to umount.
+list_mounts_deepest_first() {
+    local root="$1"
+    findmnt -Rrn -o TARGET "$root" 2>/dev/null | sort -r
+}
 
 safe_umount_tree() {
     local root="$1" mp
     [[ -d "$root" ]] || return 0
     while IFS= read -r mp; do
-        [[ -n "$mp" ]] && umount "$mp" 2>/dev/null || true
-    done < <(findmnt -Rno TARGET "$root" 2>/dev/null | sort -r)
+        [[ -n "$mp" ]] || continue
+        umount "$mp" 2>/dev/null || true
+    done < <(list_mounts_deepest_first "$root")
+}
+
+umount_tree_strict() {
+    local root="$1" mp failed=0
+    [[ -d "$root" ]] || return 0
+
+    while IFS= read -r mp; do
+        [[ -n "$mp" ]] || continue
+        if ! umount "$mp"; then
+            log_err "Failed to unmount: $mp"
+            failed=1
+        fi
+    done < <(list_mounts_deepest_first "$root")
+
+    [[ "$failed" == "0" ]] || fatal "Could not release all mounts below $root"
 }
 
 assert_unmounted_tree() {
     local root="$1"
-    if findmnt -Rno TARGET "$root" 2>/dev/null | grep -q .; then
+    if findmnt -Rrn -o TARGET "$root" 2>/dev/null | grep -q .; then
         log_err "Mounts remain below $root:"
         findmnt -R "$root" >&2 || true
         fatal "Could not release all build mounts"
@@ -114,9 +138,9 @@ normalize_overlay() {
     normalize_file "$target/etc/hostname"
     normalize_file "$target/etc/nftables.conf"
     if [[ -d "$target/etc/systemd" ]]; then
-        while IFS= read -r file; do normalize_file "$file"; done < <(
-            find "$target/etc/systemd" -type f \( -name '*.service' -o -name '*.timer' -o -name '*.network' \) -print
-        )
+        while IFS= read -r file; do
+            normalize_file "$file"
+        done < <(find "$target/etc/systemd" -type f \( -name '*.service' -o -name '*.timer' -o -name '*.network' \) -print)
     fi
     find "$target/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
     find "$target/etc/systemd/system" -maxdepth 1 -type f \( -name '*.service' -o -name '*.timer' \) -exec chmod 0644 {} + 2>/dev/null || true
@@ -217,7 +241,7 @@ write_package_manifest_and_sbom() {
             echo "PackageName: $name"
             echo "SPDXID: $spdx_id"
             echo "PackageVersion: $version"
-            echo "PackageDownloadLocation: NOASSERTION"
+            echo 'PackageDownloadLocation: NOASSERTION'
             echo 'FilesAnalyzed: false'
             echo 'PackageLicenseConcluded: NOASSERTION'
             echo 'PackageLicenseDeclared: NOASSERTION'
@@ -287,9 +311,8 @@ EOF
 
 pre_clean() {
     cleanup
-    rm -rf "$BUILD_DIR"
-    rm -rf "$ARTIFACTS_DIR"
-    mkdir -p "$BUILD_DIR" "$MNT_DIR" "$VERIFY_MNT" "$LOG_DIR" "$ARTIFACTS_DIR"
+    rm -rf "$BUILD_DIR" "$ARTIFACTS_DIR"
+    mkdir -p "$BUILD_DIR" "$MNT_DIR" "$VERIFY_MNT" "$ARTIFACTS_DIR"
 }
 
 pre_clean
@@ -388,7 +411,7 @@ rm -f "$MNT_DIR/usr/sbin/policy-rc.d"
 
 log_info "Flushing and closing build filesystems"
 sync
-safe_umount_tree "$MNT_DIR"
+umount_tree_strict "$MNT_DIR"
 assert_unmounted_tree "$MNT_DIR"
 
 log_info "Checking root filesystem before read-only verification"
@@ -435,7 +458,7 @@ grep -Eq '^[[:space:]]*initrd[[:space:]]+/boot/initrd.img-' "$VERIFY_MNT/boot/gr
 GRUB_ROOT_UUID="$(grep -Eo 'root=UUID=[0-9a-fA-F-]+' "$VERIFY_MNT/boot/grub/grub.cfg" | head -n1 | cut -d= -f3)"
 [[ "$GRUB_ROOT_UUID" == "$ROOT_UUID" ]] || fatal "GRUB root UUID does not match root filesystem"
 
-safe_umount_tree "$VERIFY_MNT"
+umount_tree_strict "$VERIFY_MNT"
 assert_unmounted_tree "$VERIFY_MNT"
 losetup -d "$VERIFY_LOOP"
 VERIFY_LOOP=""

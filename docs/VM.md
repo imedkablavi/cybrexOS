@@ -22,9 +22,14 @@ On a Debian/Ubuntu host with loop/mount privileges:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  debootstrap qemu-utils parted dosfstools rsync util-linux
+  debootstrap debian-archive-keyring qemu-utils parted dosfstools e2fsprogs rsync util-linux
 sudo bash build_scripts/build_vm.sh
 ```
+
+The builder requires `/usr/share/keyrings/debian-archive-keyring.gpg` by default and
+passes it explicitly to debootstrap. A missing keyring is a hard failure rather than an
+unsigned Debian bootstrap. Override `DEBIAN_KEYRING` only with a deliberate trusted
+keyring path.
 
 Normal output includes:
 
@@ -35,6 +40,11 @@ Normal output includes:
 - `artifacts/SHA256SUMS` — checksums for release metadata/artifacts;
 - `artifacts/REPRODUCIBILITY.md` — reproducibility status and limitations;
 - `build_vm/report.txt` — static image verification report.
+
+Before reopening the raw image read-only, the builder syncs and unmounts all build
+mounts, verifies that none remain, and runs `e2fsck -p` on the unmounted ext4 root. This
+turns leaked mounts or filesystem inconsistency into release-build failures instead of
+silently carrying them into QEMU.
 
 ## Run the same QEMU smoke boot locally
 
@@ -47,7 +57,8 @@ sudo env CYBREX_CI_SMOKE=1 SKIP_VMDK=1 DISK_SIZE=4G \
 sudo bash ci/smoke_boot_qemu.sh build_vm/CybrexTech_Dev_Preview.img
 ```
 
-The test is successful only when the serial log contains `CYBREX_SMOKE:PASS`.
+The test is successful only when the serial log contains `CYBREX_SMOKE:PASS` and QEMU
+then exits cleanly after the guest requests poweroff.
 
 ## VMware artifact
 

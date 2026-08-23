@@ -38,12 +38,16 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            case "$GITHUB_REF_NAME" in
-              v*-alpha.*) channel=alpha ;;
-              v*-beta.*) channel=beta ;;
-              v[0-9]*.[0-9]*.[0-9]*) channel=stable ;;
-              *) echo "Unsupported release tag: $GITHUB_REF_NAME" >&2; exit 1 ;;
-            esac
+            if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+              channel=alpha
+            elif [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+              channel=beta
+            elif [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              channel=stable
+            else
+              echo "Unsupported release tag: $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
           else
             channel='${{ inputs.channel }}'
           fi
@@ -87,6 +91,11 @@ jobs:
             bash build_scripts/build_vm.sh
           sudo cp /tmp/cybrex-qemu-boot.log artifacts/qualification-qemu-boot.log
           sudo cp CybrexTech_Dev_Preview.vmx artifacts/CybrexTech_Dev_Preview.vmx
+          sudo sed -i \
+            's#scsi0:0.fileName = "artifacts/CybrexTech_Dev_Preview.vmdk"#scsi0:0.fileName = "CybrexTech_Dev_Preview.vmdk"#' \
+            artifacts/CybrexTech_Dev_Preview.vmx
+          grep -F 'scsi0:0.fileName = "CybrexTech_Dev_Preview.vmdk"' \
+            artifacts/CybrexTech_Dev_Preview.vmx
           sudo chown -R "$(id -u):$(id -g)" artifacts
           (
             cd artifacts

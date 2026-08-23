@@ -9,6 +9,3 @@ ExecStart=/usr/local/libexec/cybrex-ci-smoke
 TimeoutStartSec=150
 StandardOutput=journal+console
 StandardError=journal+console
-
-[Install]
-WantedBy=multi-user.target

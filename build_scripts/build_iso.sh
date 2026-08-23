@@ -53,7 +53,7 @@ lb config \
     --bootappend-live "boot=live components hostname=cybrex-live" \
     --iso-volume "CYBREXOS_LIVE"
 
-mkdir -p config/package-lists config/includes.chroot/usr/local/sbin
+mkdir -p config/package-lists
 cat >config/package-lists/cybrex.list.chroot <<'EOF'
 linux-image-amd64
 live-boot
@@ -71,12 +71,13 @@ EOF
 
 # Inject the same tracked rootfs overlay used by the VM builder. The legacy pacman
 # configuration is irrelevant on Debian live media and is intentionally excluded.
-rsync -a --delete \
+mkdir -p config/includes.chroot
+rsync -a \
     --exclude 'etc/pacman.conf' \
     "$ROOT_DIR/rootfs/" config/includes.chroot/
 
 # The installer remains opt-in and fail-closed. Nothing invokes it automatically.
-install -m 0755 "$ROOT_DIR/build_scripts/install_cybrex.sh" \
+install -D -m 0755 "$ROOT_DIR/build_scripts/install_cybrex.sh" \
     config/includes.chroot/usr/local/sbin/cybrex-install
 
 cat >config/includes.chroot/etc/cybrex-live-release-status <<'EOF'
@@ -91,7 +92,7 @@ if [[ "$ACTION" == "configure" ]]; then
 fi
 
 lb build
-built_iso="$(find . -maxdepth 1 -type f -name '*.hybrid.iso' -o -name '*.iso' | sort | head -n1)"
+built_iso="$(find . -maxdepth 1 -type f \( -name '*.hybrid.iso' -o -name '*.iso' \) | sort | head -n1)"
 [[ -n "$built_iso" && -f "$built_iso" ]] || fail "live-build completed without an ISO"
 cp "$built_iso" "$ARTIFACTS_DIR/$IMAGE_NAME"
 sha256sum "$ARTIFACTS_DIR/$IMAGE_NAME" >"$ARTIFACTS_DIR/${IMAGE_NAME}.sha256"

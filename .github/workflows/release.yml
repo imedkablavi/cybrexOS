@@ -54,6 +54,16 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "Release channel: $channel"
 
+      - name: Enforce implemented channel gates
+        run: |
+          set -euo pipefail
+          channel='${{ steps.channel.outputs.channel }}'
+          if [[ "$channel" != "alpha" ]]; then
+            echo "Channel '$channel' is defined but promotion is intentionally blocked." >&2
+            echo "Complete the additional gates in docs/RELEASE_CHANNELS.md before enabling it." >&2
+            exit 1
+          fi
+
       - name: Static release contracts
         run: bash tests/release_contracts.sh
 

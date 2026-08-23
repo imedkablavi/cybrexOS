@@ -79,7 +79,14 @@ if ! grep -q '^CYBREX_SMOKE:PASS$' "$LOG_FILE"; then
     fail "PASS marker not observed"
 fi
 
-# A successful guest probe explicitly powers the VM off; tolerate QEMU's normal
-# exit code variation but require the guest marker as the source of truth.
+if [[ "$qemu_rc" != "0" ]]; then
+    echo "[qemu-smoke] guest emitted PASS but QEMU exited with code $qemu_rc" >&2
+    tail -n 200 "$LOG_FILE" >&2 || true
+    if [[ "$qemu_rc" == "124" || "$qemu_rc" == "137" ]]; then
+        fail "guest passed checks but VM did not power off before timeout"
+    fi
+    fail "guest passed checks but QEMU did not exit cleanly"
+fi
+
 grep '^CYBREX_SMOKE:' "$LOG_FILE"
 echo "[qemu-smoke] PASS"

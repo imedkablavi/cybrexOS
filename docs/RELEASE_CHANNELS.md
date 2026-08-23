@@ -3,6 +3,10 @@
 CybrexOS uses three channels. A channel is a statement about qualification level, not a
 marketing label.
 
+> Current automation is intentionally **alpha-only**. The release workflow recognizes
+> beta and stable naming but fails closed before building them until their additional
+> gates below are implemented and evidenced.
+
 ## Alpha
 
 Purpose: VM-focused development releases for testers.

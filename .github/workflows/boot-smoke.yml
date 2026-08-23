@@ -1,0 +1,75 @@
+name: Boot qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boot-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Release contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Static release checks
+        run: bash tests/release_contracts.sh
+
+  qemu-ovmf:
+    name: QEMU + OVMF smoke boot
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install build and VM dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap parted dosfstools rsync util-linux \
+            qemu-system-x86 ovmf
+
+      - name: Build CI qualification image
+        run: |
+          sudo env \
+            GITHUB_SHA="$GITHUB_SHA" \
+            CYBREX_CI_SMOKE=1 \
+            SKIP_VMDK=1 \
+            DISK_SIZE=4G \
+            BUILD_CHANNEL=alpha \
+            bash build_scripts/build_vm.sh
+
+      - name: Boot and qualify guest
+        run: sudo bash ci/smoke_boot_qemu.sh build_vm/CybrexTech_Dev_Preview.img
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-qualification-${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build_vm/report.txt
+            build_vm/qemu-boot.log
+            artifacts/build-report.txt
+            artifacts/cybrexOS.spdx
+            artifacts/packages.tsv
+            artifacts/REPRODUCIBILITY.md
+            artifacts/SHA256SUMS

@@ -28,6 +28,7 @@ REPRO_REPORT="$ARTIFACTS_DIR/REPRODUCIBILITY.md"
 DEBIAN_SUITE="${DEBIAN_SUITE:-bookworm}"
 DEBIAN_MIRROR="${DEBIAN_MIRROR:-http://deb.debian.org/debian}"
 SECURITY_MIRROR="${SECURITY_MIRROR:-http://security.debian.org/debian-security}"
+DEBIAN_KEYRING="${DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}"
 DISK_SIZE="${DISK_SIZE:-20G}"
 HOSTNAME="${HOSTNAME:-cybrex-dev}"
 USERNAME="${USERNAME:-cybrex}"
@@ -56,6 +57,15 @@ safe_umount_tree() {
     done < <(findmnt -Rno TARGET "$root" 2>/dev/null | sort -r)
 }
 
+assert_unmounted_tree() {
+    local root="$1"
+    if findmnt -Rno TARGET "$root" 2>/dev/null | grep -q .; then
+        log_err "Mounts remain below $root:"
+        findmnt -R "$root" >&2 || true
+        fatal "Could not release all build mounts"
+    fi
+}
+
 cleanup() {
     set +e
     safe_umount_tree "$VERIFY_MNT"
@@ -78,10 +88,11 @@ trap 'exit 129' HUP
 
 require_root
 [[ "$(uname -m)" == "x86_64" ]] || fatal "This builder currently qualifies amd64/x86_64 only."
+[[ -r "$DEBIAN_KEYRING" ]] || fatal "Missing Debian archive keyring: $DEBIAN_KEYRING (install debian-archive-keyring)"
 
 REQUIRED_BINS=(
-    debootstrap parted losetup mkfs.vfat mkfs.ext4 rsync mount umount findmnt
-    blkid chroot find grep awk sed sort sha256sum install truncate
+    debootstrap parted losetup mkfs.vfat mkfs.ext4 e2fsck rsync mount umount findmnt
+    blkid chroot find grep awk sed sort sha256sum install truncate sync
 )
 if [[ "$SKIP_VMDK" != "1" ]]; then
     REQUIRED_BINS+=(qemu-img)
@@ -234,6 +245,7 @@ reproducibility is not claimed.
 - Debian suite: \`$DEBIAN_SUITE\`
 - Debian mirror: \`$DEBIAN_MIRROR\`
 - Security mirror: \`$SECURITY_MIRROR\`
+- Debian archive keyring: \`$DEBIAN_KEYRING\`
 - Architecture: \`amd64\`
 - Disk size: \`$DISK_SIZE\`
 - SOURCE_DATE_EPOCH: \`${SOURCE_DATE_EPOCH:-unset}\`
@@ -302,8 +314,9 @@ mount "$ROOT_DEV" "$MNT_DIR"
 mkdir -p "$MNT_DIR/boot/efi"
 mount "$ESP_DEV" "$MNT_DIR/boot/efi"
 
-log_info "Bootstrapping Debian $DEBIAN_SUITE"
+log_info "Bootstrapping Debian $DEBIAN_SUITE with archive signature verification"
 debootstrap --arch=amd64 \
+    --keyring="$DEBIAN_KEYRING" \
     --include=linux-image-amd64,systemd,systemd-sysv,debian-archive-keyring,locales,grub-efi-amd64,grub-efi-amd64-bin,openssh-server,sudo,ca-certificates,lsb-release,open-vm-tools,nftables,iproute2,systemd-resolved,logrotate,python3 \
     "$DEBIAN_SUITE" "$MNT_DIR" "$DEBIAN_MIRROR"
 
@@ -373,7 +386,21 @@ chroot "$MNT_DIR" update-grub
 write_package_manifest_and_sbom
 rm -f "$MNT_DIR/usr/sbin/policy-rc.d"
 
+log_info "Flushing and closing build filesystems"
+sync
 safe_umount_tree "$MNT_DIR"
+assert_unmounted_tree "$MNT_DIR"
+
+log_info "Checking root filesystem before read-only verification"
+set +e
+e2fsck -pf "$ROOT_DEV"
+fsck_rc=$?
+set -e
+if [[ "$fsck_rc" != "0" && "$fsck_rc" != "1" ]]; then
+    fatal "e2fsck failed with status $fsck_rc"
+fi
+sync
+
 losetup -d "$LOOP_DEV"
 LOOP_DEV=""
 
@@ -390,7 +417,7 @@ log_info "Static boot artifact verification"
 VERIFY_LOOP="$(losetup -P --show -f --read-only "$IMAGE_RAW")"
 VERIFY_ROOT="${VERIFY_LOOP}p2"
 VERIFY_ESP="${VERIFY_LOOP}p1"
-mount -o ro "$VERIFY_ROOT" "$VERIFY_MNT"
+mount -o ro,noload "$VERIFY_ROOT" "$VERIFY_MNT"
 mkdir -p "$VERIFY_MNT/boot/efi"
 mount -o ro "$VERIFY_ESP" "$VERIFY_MNT/boot/efi"
 
@@ -409,6 +436,7 @@ GRUB_ROOT_UUID="$(grep -Eo 'root=UUID=[0-9a-fA-F-]+' "$VERIFY_MNT/boot/grub/grub
 [[ "$GRUB_ROOT_UUID" == "$ROOT_UUID" ]] || fatal "GRUB root UUID does not match root filesystem"
 
 safe_umount_tree "$VERIFY_MNT"
+assert_unmounted_tree "$VERIFY_MNT"
 losetup -d "$VERIFY_LOOP"
 VERIFY_LOOP=""
 
@@ -417,6 +445,7 @@ VERIFY_LOOP=""
     echo "SOURCE_SHA=$BUILD_SOURCE_SHA"
     echo "CHANNEL=$BUILD_CHANNEL"
     echo "DEBIAN_SUITE=$DEBIAN_SUITE"
+    echo "DEBIAN_KEYRING=$DEBIAN_KEYRING"
     echo "DISK_SIZE=$DISK_SIZE"
     echo "RAW_IMAGE=$IMAGE_RAW"
     echo "VMDK=$([[ "$SKIP_VMDK" == "1" ]] && echo skipped || echo "$VMDK_PATH")"
@@ -426,6 +455,7 @@ VERIFY_LOOP=""
     echo "KERNEL=$KERNEL_VMLINUZ"
     echo "INITRD=$INITRD_IMG"
     echo "ROOT_UUID_MATCH=yes"
+    echo "FILESYSTEM_CHECK=passed"
     echo "CI_SMOKE_HOOK=$CI_SMOKE"
     echo "STATIC_VERIFICATION=passed"
 } >"$REPORT_FILE"

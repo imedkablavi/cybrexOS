@@ -43,7 +43,7 @@ jobs:
           grep -q 'cybrex-ci-smoke.service' build_scripts/build_iso.sh
           grep -q 'CYBREX_SMOKE:PASS' ci/smoke_boot_iso.sh
           grep -q 'format=raw,readonly=on' ci/smoke_boot_iso.sh
-          grep -q 'destructive phase is intentionally disabled' build_scripts/install_cybrex.sh
+          grep -q 'destructive installer phase is intentionally disabled' build_scripts/install_cybrex.sh
 
   qemu-ovmf-iso:
     name: Build + QEMU OVMF live ISO

@@ -5,10 +5,10 @@ GRUB_DEFAULT=0
 GRUB_TIMEOUT=2
 GRUB_DISTRIBUTOR="CybrexTech"
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash security=apparmor mitigations=auto,nosmt audit=1"
-GRUB_CMDLINE_LINUX=""
+GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200n8"
 
-# Visuals
-# Use console mode for text-only (minimal) or keep default for graphical
+# VM/headless diagnostics: keep the Linux serial console available without weakening
+# the nftables inbound policy. systemd will create a serial getty for the active console.
 GRUB_TERMINAL=console
 GRUB_GFXMODE=1024x768
 

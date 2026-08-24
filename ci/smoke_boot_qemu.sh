@@ -22,6 +22,7 @@ trap 'exit 143' TERM
 [[ -f "$IMAGE" ]] || fail "raw image not found: $IMAGE"
 command -v qemu-system-x86_64 >/dev/null 2>&1 || fail "qemu-system-x86_64 is required"
 command -v timeout >/dev/null 2>&1 || fail "timeout is required"
+command -v tr >/dev/null 2>&1 || fail "tr is required"
 
 OVMF_CODE=""
 OVMF_VARS=""
@@ -65,12 +66,17 @@ timeout --signal=TERM --kill-after=20 "$TIMEOUT_SECONDS" \
 qemu_rc=$?
 set -e
 
-if grep -q 'CYBREX_SMOKE:FAIL:' "$LOG_FILE"; then
-    grep 'CYBREX_SMOKE:' "$LOG_FILE" >&2 || true
+# QEMU serial files can contain CRLF even on a Linux host. Normalize only for
+# machine-readable marker parsing; preserve the original serial log as evidence.
+NORMALIZED_LOG="$TMP_DIR/qemu-boot.normalized.log"
+tr -d '\r' <"$LOG_FILE" >"$NORMALIZED_LOG"
+
+if grep -q 'CYBREX_SMOKE:FAIL:' "$NORMALIZED_LOG"; then
+    grep 'CYBREX_SMOKE:' "$NORMALIZED_LOG" >&2 || true
     fail "guest qualification probe reported failure"
 fi
 
-if ! grep -q '^CYBREX_SMOKE:PASS$' "$LOG_FILE"; then
+if ! grep -q '^CYBREX_SMOKE:PASS$' "$NORMALIZED_LOG"; then
     echo "[qemu-smoke] qemu exit code: $qemu_rc" >&2
     tail -n 200 "$LOG_FILE" >&2 || true
     if [[ "$qemu_rc" == "124" || "$qemu_rc" == "137" ]]; then
@@ -88,5 +94,5 @@ if [[ "$qemu_rc" != "0" ]]; then
     fail "guest passed checks but QEMU did not exit cleanly"
 fi
 
-grep '^CYBREX_SMOKE:' "$LOG_FILE"
+grep '^CYBREX_SMOKE:' "$NORMALIZED_LOG"
 echo "[qemu-smoke] PASS"

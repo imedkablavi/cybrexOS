@@ -1,0 +1,91 @@
+name: Experimental ISO qualification
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/iso-smoke.yml'
+      - 'build_scripts/build_iso.sh'
+      - 'build_scripts/install_cybrex.sh'
+      - 'ci/guest-smoke.sh'
+      - 'ci/cybrex-ci-smoke.service'
+      - 'ci/smoke_boot_iso.sh'
+      - 'rootfs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: experimental-iso-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: ISO static contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Shell syntax
+        run: |
+          bash -n build_scripts/build_iso.sh
+          bash -n ci/smoke_boot_iso.sh
+      - name: Safety and qualification contracts
+        run: |
+          set -euo pipefail
+          grep -q -- '--debian-installer false' build_scripts/build_iso.sh
+          grep -q 'CYBREX_ISO_CI_SMOKE' build_scripts/build_iso.sh
+          grep -q 'systemctl enable nftables.service' build_scripts/build_iso.sh
+          grep -q 'cybrex-ci-smoke.service' build_scripts/build_iso.sh
+          grep -q 'CYBREX_SMOKE:PASS' ci/smoke_boot_iso.sh
+          grep -q 'format=raw,readonly=on' ci/smoke_boot_iso.sh
+          grep -q 'destructive phase is intentionally disabled' build_scripts/install_cybrex.sh
+
+  qemu-ovmf-iso:
+    name: Build + QEMU OVMF live ISO
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install live-build and QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            live-build debootstrap debian-archive-keyring rsync \
+            xorriso squashfs-tools isolinux syslinux-common \
+            qemu-system-x86 ovmf
+
+      - name: Build experimental CI ISO
+        run: |
+          sudo env \
+            CYBREX_ISO_CI_SMOKE=1 \
+            DEBIAN_SUITE=bookworm \
+            bash build_scripts/build_iso.sh build
+
+      - name: Verify ISO checksum
+        run: |
+          cd artifacts
+          sha256sum -c cybrexOS-live-amd64.iso.sha256
+
+      - name: Boot and qualify live ISO
+        run: sudo bash ci/smoke_boot_iso.sh artifacts/cybrexOS-live-amd64.iso
+
+      - name: Upload ISO qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: cybrexOS-experimental-iso-${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            artifacts/cybrexOS-live-amd64.iso.sha256
+            artifacts/qualification-iso-qemu.log

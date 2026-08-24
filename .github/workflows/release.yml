@@ -12,6 +12,16 @@ on:
           - alpha
           - beta
           - stable
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release.yml'
+      - 'build_scripts/**'
+      - 'ci/**'
+      - 'release/**'
+      - 'rootfs/**'
+      - 'docs/RELEASE_CHANNELS.md'
   push:
     tags:
       - 'v*'
@@ -21,14 +31,18 @@ permissions:
   id-token: write
   attestations: write
 
+concurrency:
+  group: release-candidate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release-candidate:
     name: Build, qualify and attest
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 70
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -48,8 +62,10 @@ jobs:
               echo "Unsupported release tag: $GITHUB_REF_NAME" >&2
               exit 1
             fi
-          else
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             channel='${{ inputs.channel }}'
+          else
+            channel=alpha
           fi
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "Release channel: $channel"
@@ -72,7 +88,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             debootstrap debian-archive-keyring parted dosfstools e2fsprogs rsync util-linux qemu-utils \
-            qemu-system-x86 ovmf
+            qemu-system-x86 ovmf openssh-client sshpass
 
       - name: Build qualification image
         run: |
@@ -84,10 +100,10 @@ jobs:
             BUILD_CHANNEL='${{ steps.channel.outputs.channel }}' \
             bash build_scripts/build_vm.sh
 
-      - name: QEMU OVMF qualification
+      - name: Deep QEMU OVMF qualification
         run: sudo bash ci/smoke_boot_qemu.sh build_vm/CybrexTech_Dev_Preview.img
 
-      - name: Preserve qualification serial evidence
+      - name: Preserve deep qualification evidence
         run: sudo cp build_vm/qemu-boot.log /tmp/cybrex-qemu-boot.log
 
       - name: Build clean release artifact
@@ -107,9 +123,27 @@ jobs:
           grep -F 'scsi0:0.fileName = "CybrexTech_Dev_Preview.vmdk"' \
             artifacts/CybrexTech_Dev_Preview.vmx
           sudo chown -R "$(id -u):$(id -g)" artifacts
+
+      - name: Generate attestable SPDX JSON SBOM
+        run: |
+          python3 release/generate_spdx_json.py \
+            artifacts/packages.tsv artifacts/cybrexOS.spdx.json
+          python3 -m json.tool artifacts/cybrexOS.spdx.json >/dev/null
+
+      - name: Qualify final VMDK artifact
+        run: bash ci/qualify_release_vmdk.sh artifacts/CybrexTech_Dev_Preview.vmdk
+
+      - name: Finalize release checksums
+        run: |
           (
             cd artifacts
-            sha256sum CybrexTech_Dev_Preview.vmx qualification-qemu-boot.log >> SHA256SUMS
+            sha256sum \
+              CybrexTech_Dev_Preview.vmx \
+              qualification-qemu-boot.log \
+              cybrexOS.spdx.json \
+              qualification-release-vmdk.txt \
+              qualification-release-vmdk-qemu.log \
+              >> SHA256SUMS
           )
 
       - name: Verify generated checksums
@@ -118,19 +152,28 @@ jobs:
         run: bash release/verify-release.sh artifacts
 
       - name: Create signed build provenance
-        id: attest
-        uses: actions/attest-build-provenance@v2
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/attest@v4
         with:
           subject-path: artifacts/CybrexTech_Dev_Preview.vmdk
 
-      - name: Verify provenance from consumer tooling
+      - name: Create signed SPDX SBOM attestation
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/CybrexTech_Dev_Preview.vmdk
+          sbom-path: artifacts/cybrexOS.spdx.json
+
+      - name: Verify provenance and SBOM attestations
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         env:
           GH_TOKEN: ${{ github.token }}
           VERIFY_PROVENANCE: '1'
+          VERIFY_SBOM_ATTESTATION: '1'
         run: bash release/verify-release.sh artifacts
 
       - name: Upload release candidate bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cybrexOS-${{ steps.channel.outputs.channel }}-${{ github.sha }}
           if-no-files-found: error
@@ -139,8 +182,23 @@ jobs:
             artifacts/CybrexTech_Dev_Preview.vmdk
             artifacts/CybrexTech_Dev_Preview.vmx
             artifacts/cybrexOS.spdx
+            artifacts/cybrexOS.spdx.json
             artifacts/packages.tsv
             artifacts/build-report.txt
             artifacts/REPRODUCIBILITY.md
             artifacts/SHA256SUMS
             artifacts/qualification-qemu-boot.log
+            artifacts/qualification-release-vmdk.txt
+            artifacts/qualification-release-vmdk-qemu.log
+
+      - name: Upload qualification evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: cybrexOS-release-failure-${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build_vm/report.txt
+            build_vm/qemu-boot.log
+            artifacts/

@@ -88,7 +88,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             debootstrap debian-archive-keyring parted dosfstools e2fsprogs rsync util-linux qemu-utils \
-            qemu-system-x86 ovmf openssh-client sshpass
+            qemu-system-x86 ovmf
 
       - name: Build qualification image
         run: |
@@ -130,20 +130,46 @@ jobs:
             artifacts/packages.tsv artifacts/cybrexOS.spdx.json
           python3 -m json.tool artifacts/cybrexOS.spdx.json >/dev/null
 
-      - name: Qualify final VMDK artifact
-        run: bash ci/qualify_release_vmdk.sh artifacts/CybrexTech_Dev_Preview.vmdk
+      - name: Qualify final VMDK artifact without mutating release bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_vmdk='artifacts/CybrexTech_Dev_Preview.vmdk'
+          test_vmdk='/tmp/CybrexTech_Dev_Preview-qualification.vmdk'
+          release_before="$(sha256sum "$release_vmdk" | awk '{print $1}')"
+          cp --sparse=always "$release_vmdk" "$test_vmdk"
+          test_before="$(sha256sum "$test_vmdk" | awk '{print $1}')"
+          [[ "$release_before" == "$test_before" ]] || {
+            echo 'Qualification copy does not match release VMDK' >&2
+            exit 1
+          }
+          bash ci/qualify_release_vmdk.sh "$test_vmdk"
+          rm -f "$test_vmdk"
+          release_after="$(sha256sum "$release_vmdk" | awk '{print $1}')"
+          [[ "$release_before" == "$release_after" ]] || {
+            echo 'Release VMDK changed during qualification' >&2
+            exit 1
+          }
+          echo "Release VMDK remained immutable: $release_after"
 
       - name: Finalize release checksums
+        shell: bash
         run: |
+          set -euo pipefail
           (
             cd artifacts
             sha256sum \
+              CybrexTech_Dev_Preview.vmdk \
               CybrexTech_Dev_Preview.vmx \
-              qualification-qemu-boot.log \
+              cybrexOS.spdx \
               cybrexOS.spdx.json \
+              packages.tsv \
+              build-report.txt \
+              REPRODUCIBILITY.md \
+              qualification-qemu-boot.log \
               qualification-release-vmdk.txt \
               qualification-release-vmdk-qemu.log \
-              >> SHA256SUMS
+              > SHA256SUMS
           )
 
       - name: Verify generated checksums

@@ -44,6 +44,7 @@ jobs:
           grep -q 'CYBREX_SMOKE:PASS' ci/smoke_boot_iso.sh
           grep -q 'format=raw,readonly=on' ci/smoke_boot_iso.sh
           grep -q 'destructive installer phase is intentionally disabled' build_scripts/install_cybrex.sh
+          grep -q 'a863905724e7b69d45066ebab113cb6de12a11984349847ad49f6151c10f017d' .github/workflows/iso-smoke.yml
 
   qemu-ovmf-iso:
     name: Build + QEMU OVMF live ISO
@@ -56,13 +57,24 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install live-build and QEMU dependencies
+      - name: Install QEMU and live-build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            live-build debootstrap debian-archive-keyring rsync \
+            debootstrap debian-archive-keyring rsync curl \
             xorriso squashfs-tools isolinux syslinux-common \
             qemu-system-x86 ovmf
+
+      - name: Install pinned Debian Bookworm live-build
+        run: |
+          set -euo pipefail
+          url='https://deb.debian.org/debian/pool/main/l/live-build/live-build_20230502_all.deb'
+          expected='a863905724e7b69d45066ebab113cb6de12a11984349847ad49f6151c10f017d'
+          curl -fsSLo /tmp/live-build.deb "$url"
+          printf '%s  %s\n' "$expected" /tmp/live-build.deb | sha256sum -c -
+          sudo dpkg -i /tmp/live-build.deb
+          test "$(dpkg-query -W -f='${Version}' live-build)" = '1:20230502'
+          lb --version
 
       - name: Build experimental CI ISO
         run: |

@@ -18,7 +18,7 @@ for script in \
     bash -n "$script"
 done
 
-python3 -m py_compile release/generate_spdx_json.py
+python3 -m py_compile release/generate_spdx_json.py ci/qualify_release_vmdk.py
 
 grep -q 'CYBREX_CI_SMOKE' build_scripts/build_vm.sh
 grep -q 'cybrex-ci-smoke.service' build_scripts/build_vm.sh
@@ -28,14 +28,17 @@ grep -q 'assert_unmounted_tree' build_scripts/build_vm.sh
 grep -q 'policy drop' rootfs/etc/nftables.conf
 grep -q 'policy accept' rootfs/etc/nftables.conf
 grep -q 'Name=en\*' rootfs/etc/systemd/network/20-dhcp.network
+grep -q 'console=ttyS0,115200n8' rootfs/etc/default/grub
 grep -q -- '--confirm-wipe' build_scripts/install_cybrex.sh
 grep -q 'UNQUALIFIED' build_scripts/install_base.sh
 grep -q 'CYBREX_SMOKE:PASS' ci/guest-smoke.sh
 grep -q 'OVMF_CODE' ci/smoke_boot_qemu.sh
 grep -q 'qemu_rc' ci/smoke_boot_qemu.sh
-grep -q 'RELEASE_VMDK:PASS' ci/qualify_release_vmdk.sh
-grep -q 'format=vmdk' ci/qualify_release_vmdk.sh
-grep -q 'systemd-networkd.service' ci/qualify_release_vmdk.sh
+grep -q 'qualify_release_vmdk.py' ci/qualify_release_vmdk.sh
+grep -q 'RELEASE_VMDK:PASS' ci/qualify_release_vmdk.py
+grep -q 'format=vmdk' ci/qualify_release_vmdk.py
+grep -q 'systemd-networkd.service' ci/qualify_release_vmdk.py
+grep -q 'serial.*stdio' ci/qualify_release_vmdk.py
 grep -q 'gh attestation verify' release/verify-release.sh
 grep -q 'https://spdx.dev/Document/v2.3' release/verify-release.sh
 grep -q 'uses: actions/attest@v4' .github/workflows/release.yml

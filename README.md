@@ -55,9 +55,13 @@ On a Debian/Ubuntu build host with root privileges:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  debootstrap qemu-utils parted dosfstools rsync util-linux
+  debootstrap debian-archive-keyring qemu-utils parted dosfstools \
+  e2fsprogs rsync util-linux
 sudo bash build_scripts/build_vm.sh
 ```
+
+The builder refuses to bootstrap when the Debian archive keyring is unavailable and runs
+`e2fsck` before reopening the generated root filesystem for read-only verification.
 
 Development defaults remain `USERNAME=cybrex` and `VM_PASSWORD=cybrex`; override the
 password for any non-disposable image.

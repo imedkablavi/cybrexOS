@@ -152,6 +152,14 @@ with tempfile.TemporaryDirectory(prefix="cybrex-vmdk-") as temp:
         proc, transcript, normalized, rb"# ", cursor, 30, "root shell prompt"
     )
 
+    # Disable terminal input echo before sending marker-bearing probes. Otherwise the
+    # literal command text could contain RELEASE_VMDK:PASS and create a false positive.
+    cursor = len(normalized)
+    send(proc, "stty -echo\n")
+    transcript, normalized, _ = wait_for(
+        proc, transcript, normalized, rb"# ", cursor, 30, "root prompt after disabling echo"
+    )
+
     checks = (
         "state=$(systemctl is-system-running 2>/dev/null || true); "
         "case \"$state\" in running|degraded) ;; *) echo RELEASE_VMDK:FAIL:systemd:$state; exit 41;; esac; "
@@ -200,7 +208,6 @@ with tempfile.TemporaryDirectory(prefix="cybrex-vmdk-") as temp:
 for line in normalized.decode(errors="replace").splitlines():
     if line.startswith("RELEASE_VMDK:"):
         markers.append(line.strip())
-# Preserve order while removing duplicates/command-echo noise.
 clean = []
 for marker in markers:
     marker = marker.strip()

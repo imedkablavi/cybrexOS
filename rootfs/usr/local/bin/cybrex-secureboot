@@ -1,36 +1,54 @@
 #!/bin/bash
-# cybrex-secureboot: Secure Boot Enrollment Helper
-# Usage: Run once during installation
+# cybrex-secureboot: inspection-only helper for the current alpha.
+# Firmware key creation/enrollment is intentionally not automated until the
+# documented Secure Boot design has passed OVMF and bare-metal qualification.
+set -Eeuo pipefail
 
-set -e
+cmd="${1:-status}"
 
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root."
-    exit 1
-fi
+usage() {
+    cat <<'EOF'
+Usage: cybrex-secureboot [status|verify-files|enroll]
 
-echo "[*] CybrexTech OS: Secure Boot Setup"
-echo "This tool uses 'sbctl' to enroll custom keys."
+  status        Report the firmware Secure Boot state when tooling is available.
+  verify-files  Inspect signatures on EFI/kernel artifacts when sbverify exists.
+  enroll        Refused in this alpha; follow docs/SECURE_BOOT.md design first.
+EOF
+}
 
-# Check for sbctl
-if ! command -v sbctl &> /dev/null; then
-    echo "Error: sbctl not found. Installing..."
-    apt install -y sbctl
-fi
-
-echo "[1] Creating custom Keys..."
-sbctl create-keys
-
-echo "[2] Signing Bootloader & Kernel..."
-sbctl sign -s /boot/efi/EFI/CybrexOS/grubx64.efi
-sbctl sign -s /boot/vmlinuz-*
-
-echo "[3] Enrolling Keys (Requires Setup Mode)..."
-read -p "Is your BIOS in Setup Mode? (y/n) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    sbctl enroll-keys -m
-    echo "[SUCCESS] Secure Boot Enrolled."
-else
-    echo "[!] Please reboot into BIOS, clear keys (Setup Mode), and run this again."
-fi
+case "$cmd" in
+    status)
+        if command -v mokutil >/dev/null 2>&1; then
+            mokutil --sb-state
+        elif [[ -d /sys/firmware/efi/efivars ]]; then
+            echo "UEFI runtime variables are available; install mokutil for a clearer Secure Boot state."
+        else
+            echo "UEFI runtime variables are not available in this boot environment."
+        fi
+        ;;
+    verify-files)
+        if ! command -v sbverify >/dev/null 2>&1; then
+            echo "sbverify is not installed; no signature claim can be made." >&2
+            exit 2
+        fi
+        found=0
+        while IFS= read -r file; do
+            found=1
+            echo "== $file =="
+            sbverify --list "$file" || true
+        done < <(find /boot/efi/EFI /boot -maxdepth 4 -type f \( -iname '*.efi' -o -name 'vmlinuz-*' \) 2>/dev/null | sort -u)
+        [[ "$found" == "1" ]] || { echo "No EFI/kernel files found to inspect." >&2; exit 2; }
+        ;;
+    enroll)
+        echo "Secure Boot key enrollment is intentionally disabled in this alpha." >&2
+        echo "See docs/SECURE_BOOT.md in the source repository." >&2
+        exit 2
+        ;;
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

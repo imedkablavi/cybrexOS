@@ -1,145 +1,158 @@
 #!/bin/bash
-# build_vm.sh: Deterministic VMware image builder for CybrexTech OS (WSL2-safe)
-set -euo pipefail
+# build_vm.sh: CybrexOS amd64 UEFI image builder for VM qualification/release.
+set -Eeuo pipefail
 IFS=$'\n\t'
 [[ "${DEBUG:-0}" == "1" ]] && set -x
 
 log_ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log_info() { printf '[%s] [INFO] %s\n' "$(log_ts)" "$*"; }
 log_warn() { printf '[%s] [WARN] %s\n' "$(log_ts)" "$*" >&2; }
-log_err()  { printf '[%s] [ERR ] %s\n' "$(log_ts)" "$*" >&2; }
-fatal()    { log_err "$*"; exit 1; }
-
-require_root() { [[ $EUID -eq 0 ]] || fatal "Run as root (sudo)."; }
-require_wsl2() { uname -r | grep -qi microsoft || log_warn "Not running under WSL2 kernel; continuing anyway."; }
-guard_mnt_c()  { if [[ "$ROOT_DIR" == /mnt/c/* ]]; then fatal "Do not run from /mnt/c; use /mnt/d or another non-C path."; fi; }
+log_err() { printf '[%s] [ERR ] %s\n' "$(log_ts)" "$*" >&2; }
+fatal() { log_err "$*"; exit 1; }
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACTS_DIR="$ROOT_DIR/artifacts"
 BUILD_DIR="$ROOT_DIR/build_vm"
 MNT_DIR="$BUILD_DIR/mnt"
 VERIFY_MNT="$BUILD_DIR/verify"
-LOG_DIR="$BUILD_DIR/logs"
 REPORT_FILE="$BUILD_DIR/report.txt"
 IMAGE_RAW="$BUILD_DIR/CybrexTech_Dev_Preview.img"
 VMDK_PATH="$ARTIFACTS_DIR/CybrexTech_Dev_Preview.vmdk"
 VMX_PATH="$ROOT_DIR/CybrexTech_Dev_Preview.vmx"
 ROOTFS_OVERLAY="$ROOT_DIR/rootfs"
-WEB_PREVIEW_DIR="$ROOT_DIR/cybrex-preview"
-GUI_STAGING="$BUILD_DIR/gui-dist"
+PACKAGE_MANIFEST="$ARTIFACTS_DIR/packages.tsv"
+SBOM_PATH="$ARTIFACTS_DIR/cybrexOS.spdx"
+REPRO_REPORT="$ARTIFACTS_DIR/REPRODUCIBILITY.md"
 
 DEBIAN_SUITE="${DEBIAN_SUITE:-bookworm}"
+DEBIAN_MIRROR="${DEBIAN_MIRROR:-http://deb.debian.org/debian}"
+SECURITY_MIRROR="${SECURITY_MIRROR:-http://security.debian.org/debian-security}"
+DEBIAN_KEYRING="${DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}"
 DISK_SIZE="${DISK_SIZE:-20G}"
 HOSTNAME="${HOSTNAME:-cybrex-dev}"
 USERNAME="${USERNAME:-cybrex}"
-SKIP_GUI="${SKIP_GUI:-0}"
+VM_PASSWORD="${VM_PASSWORD:-cybrex}"
+BUILD_CHANNEL="${BUILD_CHANNEL:-alpha}"
+CI_SMOKE="${CYBREX_CI_SMOKE:-0}"
+SKIP_VMDK="${SKIP_VMDK:-0}"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-}"
+BUILD_SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)}"
 
-REQUIRED_BINS=(debootstrap qemu-img parted losetup mkfs.vfat mkfs.ext4 rsync mount umount blkid chroot find grep awk sed)
+LOOP_DEV=""
+VERIFY_LOOP=""
 
-normalize_file() { local f="$1"; [[ -f "$f" ]] || return 0; sed -i 's/\r$//' "$f"; }
+case "$BUILD_CHANNEL" in
+    alpha|beta|stable) ;;
+    *) fatal "BUILD_CHANNEL must be alpha, beta, or stable" ;;
+esac
 
-cleanup_mounts_and_loops() {
-    set +e
-    # Unmount only inside build directories
-    awk '{print $2}' /proc/mounts | grep -E "^${MNT_DIR}(/|$)|^${VERIFY_MNT}(/|$)" | sort -r | while read -r mp; do
-        umount "$mp" 2>/dev/null
-    done
-    # Detach loops we created or that still point to our images
-    for loop in "${LOOP_DEV:-}" "${VERIFY_LOOP:-}"; do
-        [[ -n "$loop" ]] && losetup -d "$loop" 2>/dev/null
-    done
-    # Detach stale loops pointing to our raw image from previous runs
-    while read -r dev; do
-        [[ -n "$dev" ]] && losetup -d "$dev" 2>/dev/null
-    done < <(losetup -a | awk -F: -v img="$IMAGE_RAW" '$2 ~ img {print $1}')
-    rm -rf "$GUI_STAGING"
+require_root() {
+    [[ $EUID -eq 0 ]] || fatal "Run as root (sudo)."
 }
-trap cleanup_mounts_and_loops EXIT
+
+# findmnt's normal recursive display contains tree-drawing prefixes. Always request
+# raw output before passing TARGET values to umount.
+list_mounts_deepest_first() {
+    local root="$1"
+    findmnt -Rrn -o TARGET "$root" 2>/dev/null | sort -r
+}
+
+safe_umount_tree() {
+    local root="$1" mp
+    [[ -d "$root" ]] || return 0
+    while IFS= read -r mp; do
+        [[ -n "$mp" ]] || continue
+        umount "$mp" 2>/dev/null || true
+    done < <(list_mounts_deepest_first "$root")
+}
+
+umount_tree_strict() {
+    local root="$1" mp failed=0
+    [[ -d "$root" ]] || return 0
+
+    while IFS= read -r mp; do
+        [[ -n "$mp" ]] || continue
+        if ! umount "$mp"; then
+            log_err "Failed to unmount: $mp"
+            failed=1
+        fi
+    done < <(list_mounts_deepest_first "$root")
+
+    [[ "$failed" == "0" ]] || fatal "Could not release all mounts below $root"
+}
+
+assert_unmounted_tree() {
+    local root="$1"
+    if findmnt -Rrn -o TARGET "$root" 2>/dev/null | grep -q .; then
+        log_err "Mounts remain below $root:"
+        findmnt -R "$root" >&2 || true
+        fatal "Could not release all build mounts"
+    fi
+}
+
+cleanup() {
+    set +e
+    safe_umount_tree "$VERIFY_MNT"
+    safe_umount_tree "$MNT_DIR"
+
+    for loop in "$VERIFY_LOOP" "$LOOP_DEV"; do
+        [[ -n "$loop" ]] && losetup -d "$loop" 2>/dev/null || true
+    done
+
+    if [[ -f "$IMAGE_RAW" ]]; then
+        while IFS= read -r loop; do
+            [[ -n "$loop" ]] && losetup -d "$loop" 2>/dev/null || true
+        done < <(losetup -j "$IMAGE_RAW" 2>/dev/null | cut -d: -f1)
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 require_root
-require_wsl2
-guard_mnt_c
+[[ "$(uname -m)" == "x86_64" ]] || fatal "This builder currently qualifies amd64/x86_64 only."
+[[ -r "$DEBIAN_KEYRING" ]] || fatal "Missing Debian archive keyring: $DEBIAN_KEYRING (install debian-archive-keyring)"
 
+REQUIRED_BINS=(
+    debootstrap parted losetup mkfs.vfat mkfs.ext4 e2fsck rsync mount umount findmnt
+    blkid chroot find grep awk sed sort sha256sum install truncate sync
+)
+if [[ "$SKIP_VMDK" != "1" ]]; then
+    REQUIRED_BINS+=(qemu-img)
+fi
 for bin in "${REQUIRED_BINS[@]}"; do
     command -v "$bin" >/dev/null 2>&1 || fatal "Missing dependency: $bin"
 done
 
-export DEBIAN_FRONTEND=noninteractive
-
-pre_clean() {
-    log_info "[*] Cleaning previous residues..."
-    cleanup_mounts_and_loops
-    rm -rf "$BUILD_DIR"
-    mkdir -p "$ARTIFACTS_DIR" "$BUILD_DIR" "$MNT_DIR" "$VERIFY_MNT" "$LOG_DIR"
-    rm -f "$VMDK_PATH" "$REPORT_FILE"
+normalize_file() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    sed -i 's/\r$//' "$file"
 }
 
-normalize_permissions() {
-    local target="$1"
-    find "$target/etc/systemd/system" -maxdepth 1 -type f -name "*.service" -exec chmod 0644 {} + 2>/dev/null || true
-    find "$target/lib/systemd/system" -maxdepth 1 -type f -name "*.service" -exec chmod 0644 {} + 2>/dev/null || true
-    find "$target/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
-    [[ -d "$target/etc/sudoers.d" ]] && chmod 0440 "$target"/etc/sudoers.d/* 2>/dev/null || true
-}
-
-normalize_texts() {
-    local target="$1"
+normalize_overlay() {
+    local target="$1" file
     normalize_file "$target/etc/default/grub"
     normalize_file "$target/etc/fstab"
     normalize_file "$target/etc/hostname"
-    find "$target/etc/systemd/system" -maxdepth 1 -type f -name "*.service" -exec sed -i 's/\r$//' {} + 2>/dev/null || true
-    find "$target/lib/systemd/system" -maxdepth 1 -type f -name "*.service" -exec sed -i 's/\r$//' {} + 2>/dev/null || true
-}
-
-disable_or_validate_local_apt_repo() {
-    local target="$1"
-    local list="$target/etc/apt/sources.list.d/cybrex-local.list"
-    local repo="$target/opt/cybrex/repo"
-    [[ -f "$list" ]] || return 0
-    if [[ -d "$repo" && ( -f "$repo/Packages" || -f "$repo/Packages.gz" || -f "$repo/Release" ) ]]; then
-        log_info "[*] Local repo present, keeping cybrex-local.list."
-        return 0
+    normalize_file "$target/etc/nftables.conf"
+    if [[ -d "$target/etc/systemd" ]]; then
+        while IFS= read -r file; do
+            normalize_file "$file"
+        done < <(find "$target/etc/systemd" -type f \( -name '*.service' -o -name '*.timer' -o -name '*.network' \) -print)
     fi
-    log_warn "[!] Disabling cybrex-local.list (missing local repo Packages)."
-    sed -i 's|^[[:space:]]*deb |# DISABLED missing repo: deb |' "$list"
-}
-
-ensure_policy_rc_d() {
-    local target="$1"
-    mkdir -p "$target/usr/sbin"
-    cat > "$target/usr/sbin/policy-rc.d" <<'EOF'
-#!/bin/sh
-exit 101
-EOF
-    chmod 755 "$target/usr/sbin/policy-rc.d"
-}
-
-remove_policy_rc_d() {
-    local target="$1"
-    rm -f "$target/usr/sbin/policy-rc.d" || true
-}
-
-ensure_default_grub() {
-    local target="$1"
-    if [[ ! -f "$target/etc/default/grub" ]]; then
-        cat > "$target/etc/default/grub" <<'EOF'
-GRUB_DEFAULT=0
-GRUB_TIMEOUT=5
-GRUB_DISTRIBUTOR=Cybrex
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
-GRUB_CMDLINE_LINUX=""
-EOF
-    fi
+    find "$target/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
+    find "$target/etc/systemd/system" -maxdepth 1 -type f \( -name '*.service' -o -name '*.timer' \) -exec chmod 0644 {} + 2>/dev/null || true
 }
 
 ensure_networkd_config() {
-    local target="$1"
-    local netdir="$target/etc/systemd/network"
+    local target="$1" netdir="$1/etc/systemd/network"
     mkdir -p "$netdir"
-    if ! ls "$netdir"/*.network >/dev/null 2>&1; then
-        cat > "$netdir/10-wired-dhcp.network" <<'EOF'
+    if ! compgen -G "$netdir/*.network" >/dev/null; then
+        cat >"$netdir/10-wired-dhcp.network" <<'EOF'
 [Match]
-Name=en*
+Name=en* eth*
 
 [Network]
 DHCP=ipv4
@@ -147,272 +160,340 @@ EOF
     fi
 }
 
-enable_if_exists() {
+install_policy_rc_d() {
+    local target="$1"
+    install -d -m 0755 "$target/usr/sbin"
+    cat >"$target/usr/sbin/policy-rc.d" <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+    chmod 0755 "$target/usr/sbin/policy-rc.d"
+}
+
+bind_chroot_filesystems() {
+    mount --bind /dev "$MNT_DIR/dev"
+    mount -t proc proc "$MNT_DIR/proc"
+    mount -t sysfs sysfs "$MNT_DIR/sys"
+}
+
+enable_required() {
     local target="$1" service="$2"
-    if [[ -f "$target/lib/systemd/system/$service" || -f "$target/etc/systemd/system/$service" ]]; then
-        chroot "$target" systemctl enable "$service" || true
+    if [[ ! -f "$target/lib/systemd/system/$service" && ! -f "$target/usr/lib/systemd/system/$service" && ! -f "$target/etc/systemd/system/$service" ]]; then
+        fatal "Required service missing from image: $service"
+    fi
+    chroot "$target" systemctl enable "$service" >/dev/null
+}
+
+enable_optional() {
+    local target="$1" service="$2"
+    if [[ -f "$target/lib/systemd/system/$service" || -f "$target/usr/lib/systemd/system/$service" || -f "$target/etc/systemd/system/$service" ]]; then
+        chroot "$target" systemctl enable "$service" >/dev/null || log_warn "Could not enable optional service $service"
     fi
 }
 
-update_vmx() {
-    local vmx="$1" vmdk_rel="artifacts/CybrexTech_Dev_Preview.vmdk"
-    local tmp
-    tmp=$(mktemp)
-    cat > "$tmp" <<'EOF'
+install_ci_smoke_hook() {
+    local target="$1"
+    [[ "$CI_SMOKE" == "1" ]] || return 0
+    [[ -f "$ROOT_DIR/ci/guest-smoke.sh" ]] || fatal "Missing ci/guest-smoke.sh"
+    [[ -f "$ROOT_DIR/ci/cybrex-ci-smoke.service" ]] || fatal "Missing ci/cybrex-ci-smoke.service"
+
+    install -D -m 0755 "$ROOT_DIR/ci/guest-smoke.sh" "$target/usr/local/libexec/cybrex-ci-smoke"
+    install -D -m 0644 "$ROOT_DIR/ci/cybrex-ci-smoke.service" "$target/etc/systemd/system/cybrex-ci-smoke.service"
+
+    if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' "$target/etc/default/grub"; then
+        sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=""/' "$target/etc/default/grub"
+    else
+        echo 'GRUB_CMDLINE_LINUX_DEFAULT=""' >>"$target/etc/default/grub"
+    fi
+    if grep -q '^GRUB_CMDLINE_LINUX=' "$target/etc/default/grub"; then
+        sed -i 's/^GRUB_CMDLINE_LINUX=.*/GRUB_CMDLINE_LINUX="console=ttyS0,115200n8 systemd.log_target=console"/' "$target/etc/default/grub"
+    else
+        echo 'GRUB_CMDLINE_LINUX="console=ttyS0,115200n8 systemd.log_target=console"' >>"$target/etc/default/grub"
+    fi
+    enable_required "$target" cybrex-ci-smoke.service
+}
+
+write_package_manifest_and_sbom() {
+    local created namespace name version arch spdx_id index=0
+    chroot "$MNT_DIR" dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\n' | LC_ALL=C sort >"$PACKAGE_MANIFEST"
+
+    if [[ -n "$SOURCE_DATE_EPOCH" ]]; then
+        created="$(date -u -d "@$SOURCE_DATE_EPOCH" +'%Y-%m-%dT%H:%M:%SZ')"
+    else
+        created="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    fi
+    namespace="https://github.com/imedkablavi/cybrexOS/sbom/${BUILD_SOURCE_SHA//[^A-Za-z0-9._-]/_}/${SOURCE_DATE_EPOCH:-unfixed}"
+
+    {
+        echo 'SPDXVersion: SPDX-2.3'
+        echo 'DataLicense: CC0-1.0'
+        echo 'SPDXID: SPDXRef-DOCUMENT'
+        echo 'DocumentName: cybrexOS-rootfs'
+        echo "DocumentNamespace: $namespace"
+        echo 'Creator: Tool: cybrexOS-build_vm.sh'
+        echo "Created: $created"
+        echo
+
+        while IFS=$'\t' read -r name version arch; do
+            [[ -n "$name" ]] || continue
+            index=$((index + 1))
+            spdx_id="SPDXRef-Package-$(printf '%s' "$name-$arch-$index" | sed 's/[^A-Za-z0-9.-]/-/g')"
+            echo "PackageName: $name"
+            echo "SPDXID: $spdx_id"
+            echo "PackageVersion: $version"
+            echo 'PackageDownloadLocation: NOASSERTION'
+            echo 'FilesAnalyzed: false'
+            echo 'PackageLicenseConcluded: NOASSERTION'
+            echo 'PackageLicenseDeclared: NOASSERTION'
+            echo 'PackageCopyrightText: NOASSERTION'
+            echo "PackageComment: Debian architecture: $arch"
+            echo "Relationship: SPDXRef-DOCUMENT DESCRIBES $spdx_id"
+            echo
+        done <"$PACKAGE_MANIFEST"
+    } >"$SBOM_PATH"
+}
+
+write_reproducibility_report() {
+    cat >"$REPRO_REPORT" <<EOF
+# CybrexOS Reproducibility Report
+
+Status: **NOT BIT-REPRODUCIBLE / NOT YET QUALIFIED**
+
+This build records its inputs and emits deterministic package ordering, but byte-for-byte
+reproducibility is not claimed.
+
+## Recorded inputs
+
+- Source commit: \`$BUILD_SOURCE_SHA\`
+- Release channel: \`$BUILD_CHANNEL\`
+- Debian suite: \`$DEBIAN_SUITE\`
+- Debian mirror: \`$DEBIAN_MIRROR\`
+- Security mirror: \`$SECURITY_MIRROR\`
+- Debian archive keyring: \`$DEBIAN_KEYRING\`
+- Architecture: \`amd64\`
+- Disk size: \`$DISK_SIZE\`
+- SOURCE_DATE_EPOCH: \`${SOURCE_DATE_EPOCH:-unset}\`
+
+## Remaining nondeterminism
+
+- Debian repositories are not pinned to a snapshot timestamp.
+- Filesystem UUIDs and filesystem metadata are generated during each build.
+- Package, initramfs and GRUB tooling can embed timestamps or host-dependent metadata.
+- VMDK conversion can contain format metadata that is not guaranteed reproducible.
+
+A future reproducible-build qualification must build the same source twice in isolated
+runners from pinned package snapshots and compare the release artifact hashes. Until that
+passes, identical SHA256 values across independent builds are not promised.
+EOF
+}
+
+write_vmx() {
+    cat >"$VMX_PATH" <<'EOF'
 .encoding = "UTF-8"
 config.version = "8"
 virtualHW.version = "19"
-displayName = "CybrexTech OS (Dev Preview)"
+displayName = "CybrexOS Alpha"
 guestOS = "debian12-64"
 memsize = "4096"
 numvcpus = "2"
-cpuid.coresPerSocket = "1"
 firmware = "efi"
 scsi0.present = "TRUE"
 scsi0.virtualDev = "lsilogic"
 scsi0:0.present = "TRUE"
+scsi0:0.fileName = "artifacts/CybrexTech_Dev_Preview.vmdk"
 ethernet0.present = "TRUE"
 ethernet0.connectionType = "nat"
 ethernet0.virtualDev = "e1000e"
 usb.present = "TRUE"
-ehci.present = "TRUE"
 usb_xhci.present = "TRUE"
-sound.present = "TRUE"
-sound.virtualDev = "hdaudio"
 EOF
-    # Preserve existing lines except the ones we control
-    {
-        grep -v -E '^(firmware|scsi0:0.fileName|scsi0.virtualDev|scsi0.present|scsi0:0.present|displayName|guestOS|memsize|numvcpus|cpuid.coresPerSocket|ethernet0\.present|ethernet0\.connectionType|ethernet0\.virtualDev|usb\.present|ehci\.present|usb_xhci\.present|sound\.present|sound\.virtualDev|virtualHW\.version|config\.version|\.encoding|nvram|extendedConfigFile|vmxstats\.filename|vmci0\.present|tools\.syncTime)' "$vmx" 2>/dev/null || true
-        cat "$tmp"
-        echo "scsi0:0.fileName = \"$vmdk_rel\""
-        echo "nvram = \"CybrexTech_Dev_Preview.nvram\""
-        echo "extendedConfigFile = \"CybrexTech_Dev_Preview.vmxf\""
-        echo "vmxstats.filename = \"CybrexTech_Dev_Preview.scoreboard\""
-    } | awk 'NF' > "${vmx}.new"
-    mv "${vmx}.new" "$vmx"
-    rm -f "$tmp"
 }
 
-write_report() {
-    {
-        echo "Build summary ($(log_ts))"
-        echo "ROOT_DIR=$ROOT_DIR"
-        echo "ARTIFACTS=$VMDK_PATH"
-    echo "RAW_IMAGE=$IMAGE_RAW"
-    echo "VMX=$VMX_PATH"
-    echo "HOSTNAME=$HOSTNAME"
-    echo "USERNAME=$USERNAME"
-} > "$REPORT_FILE"
+pre_clean() {
+    cleanup
+    rm -rf "$BUILD_DIR" "$ARTIFACTS_DIR"
+    mkdir -p "$BUILD_DIR" "$MNT_DIR" "$VERIFY_MNT" "$ARTIFACTS_DIR"
 }
 
 pre_clean
+export DEBIAN_FRONTEND=noninteractive
 
-log_info "[*] Creating raw disk ($DISK_SIZE)..."
+log_info "Creating raw disk ($DISK_SIZE)"
 truncate -s "$DISK_SIZE" "$IMAGE_RAW"
-
-log_info "[*] Partitioning (GPT: EFI + root)..."
 parted -s "$IMAGE_RAW" mklabel gpt
 parted -s "$IMAGE_RAW" mkpart ESP fat32 1MiB 513MiB
 parted -s "$IMAGE_RAW" set 1 esp on
 parted -s "$IMAGE_RAW" mkpart ROOT ext4 513MiB 100%
 
-log_info "[*] Attaching loop device..."
-LOOP_DEV=$(losetup -P --show -f "$IMAGE_RAW")
+LOOP_DEV="$(losetup -P --show -f "$IMAGE_RAW")"
 ESP_DEV="${LOOP_DEV}p1"
 ROOT_DEV="${LOOP_DEV}p2"
+[[ -b "$ESP_DEV" && -b "$ROOT_DEV" ]] || fatal "Loop partitions were not created"
 
-log_info "[*] Formatting filesystems..."
-mkfs.vfat -F32 "$ESP_DEV"
-mkfs.ext4 -F "$ROOT_DEV"
+mkfs.vfat -F32 -n CYBREXEFI "$ESP_DEV" >/dev/null
+mkfs.ext4 -F -L cybrex-root "$ROOT_DEV" >/dev/null
 
-log_info "[*] Mounting target root..."
 mount "$ROOT_DEV" "$MNT_DIR"
 mkdir -p "$MNT_DIR/boot/efi"
 mount "$ESP_DEV" "$MNT_DIR/boot/efi"
 
-log_info "[*] Bootstrapping Debian ($DEBIAN_SUITE)..."
+log_info "Bootstrapping Debian $DEBIAN_SUITE with archive signature verification"
 debootstrap --arch=amd64 \
-    --include=linux-image-amd64,systemd,systemd-sysv,debian-archive-keyring,locales,grub-efi-amd64,openssh-server,sudo,ca-certificates,lsb-release,open-vm-tools,nftables,iproute2 \
-    "$DEBIAN_SUITE" "$MNT_DIR" http://deb.debian.org/debian/ || fatal "debootstrap failed"
+    --keyring="$DEBIAN_KEYRING" \
+    --include=linux-image-amd64,systemd,systemd-sysv,debian-archive-keyring,locales,grub-efi-amd64,grub-efi-amd64-bin,openssh-server,sudo,ca-certificates,lsb-release,open-vm-tools,nftables,iproute2,systemd-resolved,logrotate,python3 \
+    "$DEBIAN_SUITE" "$MNT_DIR" "$DEBIAN_MIRROR"
 
-log_info "[*] Applying Cybrex rootfs overlay..."
-if [[ -d "$ROOTFS_OVERLAY" ]]; then
-    rsync -a "$ROOTFS_OVERLAY"/ "$MNT_DIR"/
-else
-    log_warn "[!] Overlay not found at $ROOTFS_OVERLAY (continuing without it)."
-fi
-
-disable_or_validate_local_apt_repo "$MNT_DIR"
-ensure_default_grub "$MNT_DIR"
-normalize_texts "$MNT_DIR"
-normalize_permissions "$MNT_DIR"
+[[ -d "$ROOTFS_OVERLAY" ]] || fatal "Missing rootfs overlay: $ROOTFS_OVERLAY"
+rsync -a "$ROOTFS_OVERLAY"/ "$MNT_DIR"/
+normalize_overlay "$MNT_DIR"
 ensure_networkd_config "$MNT_DIR"
 
-log_info "[*] Base system configuration..."
-ROOT_UUID=$(blkid -s UUID -o value "$ROOT_DEV")
-ESP_UUID=$(blkid -s UUID -o value "$ESP_DEV")
+ROOT_UUID="$(blkid -s UUID -o value "$ROOT_DEV")"
+ESP_UUID="$(blkid -s UUID -o value "$ESP_DEV")"
+[[ -n "$ROOT_UUID" && -n "$ESP_UUID" ]] || fatal "Could not determine filesystem UUIDs"
 
-cat > "$MNT_DIR/etc/fstab" <<EOF
+cat >"$MNT_DIR/etc/fstab" <<EOF
 UUID=$ROOT_UUID / ext4 defaults 0 1
 UUID=$ESP_UUID /boot/efi vfat umask=0077 0 1
 EOF
-
-echo "$HOSTNAME" > "$MNT_DIR/etc/hostname"
-
-cat > "$MNT_DIR/etc/apt/sources.list" <<EOF
-deb http://deb.debian.org/debian/ $DEBIAN_SUITE main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security $DEBIAN_SUITE-security main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian/ $DEBIAN_SUITE-updates main contrib non-free non-free-firmware
+printf '%s\n' "$HOSTNAME" >"$MNT_DIR/etc/hostname"
+cat >"$MNT_DIR/etc/apt/sources.list" <<EOF
+deb $DEBIAN_MIRROR $DEBIAN_SUITE main contrib non-free non-free-firmware
+deb $SECURITY_MIRROR $DEBIAN_SUITE-security main contrib non-free non-free-firmware
+deb $DEBIAN_MIRROR $DEBIAN_SUITE-updates main contrib non-free non-free-firmware
 EOF
 
 mkdir -p "$MNT_DIR/var/log/cybrex" "$MNT_DIR/var/run/cybrex"
+bind_chroot_filesystems
 
-log_info "[*] Binding host pseudo-filesystems..."
-mount --bind /dev "$MNT_DIR/dev"
-mount --bind /proc "$MNT_DIR/proc"
-mount --bind /sys "$MNT_DIR/sys"
-
-log_info "[*] Preparing chroot (DNS + policy-rc.d)..."
 if [[ -f /etc/resolv.conf ]]; then
     cp -L /etc/resolv.conf "$MNT_DIR/etc/resolv.conf"
 else
-    echo "nameserver 1.1.1.1" > "$MNT_DIR/etc/resolv.conf"
+    printf 'nameserver 1.1.1.1\n' >"$MNT_DIR/etc/resolv.conf"
 fi
-ensure_policy_rc_d "$MNT_DIR"
+install_policy_rc_d "$MNT_DIR"
 
-log_info "[*] Installing systemd-resolved and logrotate (inside chroot)..."
-chroot "$MNT_DIR" apt-get update
-chroot "$MNT_DIR" apt-get install -y systemd-resolved logrotate
-
-log_info "[*] Finalizing inside chroot..."
-chroot "$MNT_DIR" bash -c "echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && locale-gen"
-chroot "$MNT_DIR" bash -c "echo 'LANG=en_US.UTF-8' > /etc/default/locale"
+chroot "$MNT_DIR" bash -c "echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && locale-gen >/dev/null"
+printf 'LANG=en_US.UTF-8\n' >"$MNT_DIR/etc/default/locale"
 
 if ! chroot "$MNT_DIR" id "$USERNAME" >/dev/null 2>&1; then
     chroot "$MNT_DIR" useradd -m -s /bin/bash -G sudo,adm,systemd-journal "$USERNAME"
-    echo "$USERNAME:$USERNAME" | chroot "$MNT_DIR" chpasswd
 fi
-echo "$USERNAME ALL=(ALL) ALL" > "$MNT_DIR/etc/sudoers.d/$USERNAME"
-chmod 440 "$MNT_DIR/etc/sudoers.d/$USERNAME"
+printf '%s:%s\n' "$USERNAME" "$VM_PASSWORD" | chroot "$MNT_DIR" chpasswd
+printf '%s ALL=(ALL) ALL\n' "$USERNAME" >"$MNT_DIR/etc/sudoers.d/$USERNAME"
+chmod 0440 "$MNT_DIR/etc/sudoers.d/$USERNAME"
 
 rm -f "$MNT_DIR/etc/resolv.conf"
-ln -sf /run/systemd/resolve/stub-resolv.conf "$MNT_DIR/etc/resolv.conf"
+ln -s /run/systemd/resolve/stub-resolv.conf "$MNT_DIR/etc/resolv.conf"
 
-# Network stack: systemd-networkd/resolved only (no NetworkManager)
-enable_if_exists "$MNT_DIR" systemd-networkd.service
-enable_if_exists "$MNT_DIR" systemd-resolved.service
-enable_if_exists "$MNT_DIR" ssh.service
-enable_if_exists "$MNT_DIR" nftables.service
-enable_if_exists "$MNT_DIR" cybrex-daemon.service
-enable_if_exists "$MNT_DIR" cybrex-demo.service
-enable_if_exists "$MNT_DIR" cybrex-update.timer
+enable_required "$MNT_DIR" systemd-networkd.service
+enable_required "$MNT_DIR" systemd-resolved.service
+enable_required "$MNT_DIR" nftables.service
+enable_optional "$MNT_DIR" ssh.service
+enable_optional "$MNT_DIR" cybrex-daemon.service
+enable_optional "$MNT_DIR" cybrex-update.timer
+# cybrex-demo.service is intentionally not enabled in the headless release image.
 
-log_info "[*] Installing GRUB (EFI)..."
-chroot "$MNT_DIR" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Cybrex --removable --recheck
-chroot "$MNT_DIR" update-grub || fatal "update-grub failed"
+install_ci_smoke_hook "$MNT_DIR"
 
-# Copy GUI payload if built
-if [[ -d "$GUI_STAGING" ]]; then
-    log_info "[*] Copying GUI assets..."
-    mkdir -p "$MNT_DIR/opt/cybrex/gui"
-    rsync -a "$GUI_STAGING"/ "$MNT_DIR/opt/cybrex/gui"/
+log_info "Installing GRUB EFI removable boot path"
+chroot "$MNT_DIR" grub-install \
+    --target=x86_64-efi \
+    --efi-directory=/boot/efi \
+    --bootloader-id=Cybrex \
+    --removable \
+    --no-nvram \
+    --recheck
+chroot "$MNT_DIR" update-grub
+
+write_package_manifest_and_sbom
+rm -f "$MNT_DIR/usr/sbin/policy-rc.d"
+
+log_info "Flushing and closing build filesystems"
+sync
+umount_tree_strict "$MNT_DIR"
+assert_unmounted_tree "$MNT_DIR"
+
+log_info "Checking root filesystem before read-only verification"
+set +e
+e2fsck -pf "$ROOT_DEV"
+fsck_rc=$?
+set -e
+if [[ "$fsck_rc" != "0" && "$fsck_rc" != "1" ]]; then
+    fatal "e2fsck failed with status $fsck_rc"
 fi
+sync
 
-remove_policy_rc_d "$MNT_DIR"
-
-log_info "[*] Unmounting chroot binds..."
-umount "$MNT_DIR/proc"
-umount "$MNT_DIR/sys"
-umount "$MNT_DIR/dev"
-umount "$MNT_DIR/boot/efi"
-umount "$MNT_DIR"
 losetup -d "$LOOP_DEV"
 LOOP_DEV=""
 
-log_info "[*] Converting raw image to VMDK..."
-qemu-img convert -f raw -O vmdk "$IMAGE_RAW" "$VMDK_PATH"
+if [[ "$SKIP_VMDK" != "1" ]]; then
+    log_info "Converting raw image to VMDK"
+    qemu-img convert -f raw -O vmdk "$IMAGE_RAW" "$VMDK_PATH"
+    qemu-img check -f vmdk "$VMDK_PATH" >/dev/null
+    write_vmx
+else
+    log_info "SKIP_VMDK=1: raw image retained for QEMU qualification only"
+fi
 
-log_info "[*] Validating VMDK..."
-qemu-img info "$VMDK_PATH" >/dev/null 2>&1 || fatal "qemu-img info failed on VMDK"
-
-log_info "[*] Validating boot artifacts inside raw image..."
-VERIFY_LOOP=$(losetup -P --show -f --read-only "$IMAGE_RAW")
+log_info "Static boot artifact verification"
+VERIFY_LOOP="$(losetup -P --show -f --read-only "$IMAGE_RAW")"
 VERIFY_ROOT="${VERIFY_LOOP}p2"
 VERIFY_ESP="${VERIFY_LOOP}p1"
-mount -o ro "$VERIFY_ROOT" "$VERIFY_MNT"
-mkdir -p "$VERIFY_MNT/boot/efi" 2>/dev/null || true
+mount -o ro,noload "$VERIFY_ROOT" "$VERIFY_MNT"
+mkdir -p "$VERIFY_MNT/boot/efi"
 mount -o ro "$VERIFY_ESP" "$VERIFY_MNT/boot/efi"
 
 [[ -s "$VERIFY_MNT/boot/grub/grub.cfg" ]] || fatal "Missing /boot/grub/grub.cfg"
-grep -q "menuentry" "$VERIFY_MNT/boot/grub/grub.cfg" || fatal "No menuentry found in grub.cfg"
-[[ -f "$VERIFY_MNT/boot/efi/EFI/BOOT/BOOTX64.EFI" ]] || fatal "Missing EFI bootloader BOOTX64.EFI"
-[[ -f "$VERIFY_MNT/etc/fstab" ]] || fatal "Missing /etc/fstab"
-grep -q "^UUID=" "$VERIFY_MNT/etc/fstab" || fatal "/etc/fstab does not use UUID entries"
-[[ -f "$VERIFY_MNT/etc/hostname" ]] || fatal "Missing /etc/hostname"
-HOSTNAME_VERIFIED=$(cat "$VERIFY_MNT/etc/hostname")
-[[ "$HOSTNAME_VERIFIED" == "$HOSTNAME" ]] || fatal "Hostname mismatch (expected $HOSTNAME, got $HOSTNAME_VERIFIED)"
-
-# Kernel/initrd/grub verification
-KERNEL_VMLINUZ=$(find "$VERIFY_MNT/boot" -maxdepth 1 -type f -name "vmlinuz-*" -printf "%f\n" | head -n 1)
-[[ -n "$KERNEL_VMLINUZ" ]] || fatal "No /boot/vmlinuz-* found"
+[[ -f "$VERIFY_MNT/boot/efi/EFI/BOOT/BOOTX64.EFI" ]] || fatal "Missing EFI/BOOT/BOOTX64.EFI"
+KERNEL_VMLINUZ="$(find "$VERIFY_MNT/boot" -maxdepth 1 -type f -name 'vmlinuz-*' -printf '%f\n' | sort | head -n1)"
+INITRD_IMG="$(find "$VERIFY_MNT/boot" -maxdepth 1 -type f -name 'initrd.img-*' -printf '%f\n' | sort | head -n1)"
+[[ -n "$KERNEL_VMLINUZ" ]] || fatal "No kernel image found"
+[[ -n "$INITRD_IMG" ]] || fatal "No initramfs found"
 KERNEL_VERSION="${KERNEL_VMLINUZ#vmlinuz-}"
-INITRD_IMG=$(find "$VERIFY_MNT/boot" -maxdepth 1 -type f -name "initrd.img-*" -printf "%f\n" | head -n 1)
-[[ -n "$INITRD_IMG" ]] || fatal "No /boot/initrd.img-* found"
-[[ -d "$VERIFY_MNT/lib/modules/$KERNEL_VERSION" ]] || fatal "Missing modules directory for $KERNEL_VERSION"
+[[ -d "$VERIFY_MNT/lib/modules/$KERNEL_VERSION" ]] || fatal "Missing modules for $KERNEL_VERSION"
 
-GRUB_CFG="$VERIFY_MNT/boot/grub/grub.cfg"
-GRUB_HAS_LINUX_LINE="no"
-GRUB_HAS_INITRD_LINE="no"
-GRUB_ROOT_UUID=""
-if grep -Eq '^[[:space:]]*linux[[:space:]]+/boot/vmlinuz-' "$GRUB_CFG"; then GRUB_HAS_LINUX_LINE="yes"; fi
-if grep -Eq '^[[:space:]]*initrd[[:space:]]+/boot/initrd\.img-' "$GRUB_CFG"; then GRUB_HAS_INITRD_LINE="yes"; fi
-GRUB_ROOT_UUID=$(grep -Eo 'root=UUID=[0-9a-fA-F-]+' "$GRUB_CFG" | head -n 1 | sed 's/root=UUID=//')
-[[ "$GRUB_HAS_LINUX_LINE" == "yes" ]] || fatal "grub.cfg missing linux /boot/vmlinuz line"
-[[ "$GRUB_HAS_INITRD_LINE" == "yes" ]] || fatal "grub.cfg missing initrd /boot/initrd.img line"
-[[ -n "$GRUB_ROOT_UUID" ]] || fatal "grub.cfg missing root=UUID entry"
+grep -Eq '^[[:space:]]*linux[[:space:]]+/boot/vmlinuz-' "$VERIFY_MNT/boot/grub/grub.cfg" || fatal "grub.cfg has no linux entry"
+grep -Eq '^[[:space:]]*initrd[[:space:]]+/boot/initrd.img-' "$VERIFY_MNT/boot/grub/grub.cfg" || fatal "grub.cfg has no initrd entry"
+GRUB_ROOT_UUID="$(grep -Eo 'root=UUID=[0-9a-fA-F-]+' "$VERIFY_MNT/boot/grub/grub.cfg" | head -n1 | cut -d= -f3)"
+[[ "$GRUB_ROOT_UUID" == "$ROOT_UUID" ]] || fatal "GRUB root UUID does not match root filesystem"
 
-# Cross-check root UUID in fstab vs grub
-FSTAB_ROOT_UUID=$(grep -E '^[[:space:]]*UUID=' "$VERIFY_MNT/etc/fstab" | awk '$2=="/"{print $1}' | head -n 1 | sed 's/UUID=//')
-[[ -n "$FSTAB_ROOT_UUID" ]] || fatal "Cannot extract root UUID from /etc/fstab"
-GRUB_ROOT_UUID_MATCHES_FSTAB="no"
-if [[ "$GRUB_ROOT_UUID" == "$FSTAB_ROOT_UUID" ]]; then GRUB_ROOT_UUID_MATCHES_FSTAB="yes"; else fatal "root UUID mismatch: grub=$GRUB_ROOT_UUID fstab=$FSTAB_ROOT_UUID"; fi
-
-# Verify systemd-networkd/resolved/ssh enabled via wants symlinks
-WARNINGS=()
-for svc in systemd-networkd.service systemd-resolved.service ssh.service; do
-    if [[ ! -L "$VERIFY_MNT/etc/systemd/system/multi-user.target.wants/$svc" && ! -L "$VERIFY_MNT/etc/systemd/system/default.target.wants/$svc" ]]; then
-        log_warn "[!] $svc not enabled via wants symlink; please verify."
-        WARNINGS+=("$svc not enabled via wants symlink")
-    fi
-done
-
-umount "$VERIFY_MNT/boot/efi"
-umount "$VERIFY_MNT"
+umount_tree_strict "$VERIFY_MNT"
+assert_unmounted_tree "$VERIFY_MNT"
 losetup -d "$VERIFY_LOOP"
 VERIFY_LOOP=""
 
-log_info "[*] Updating VMX..."
-update_vmx "$VMX_PATH"
-write_report
 {
-    echo "VERIFICATION=passed"
-    echo "GRUB_CFG=present"
+    echo "BUILD_TIME=$(log_ts)"
+    echo "SOURCE_SHA=$BUILD_SOURCE_SHA"
+    echo "CHANNEL=$BUILD_CHANNEL"
+    echo "DEBIAN_SUITE=$DEBIAN_SUITE"
+    echo "DEBIAN_KEYRING=$DEBIAN_KEYRING"
+    echo "DISK_SIZE=$DISK_SIZE"
+    echo "RAW_IMAGE=$IMAGE_RAW"
+    echo "VMDK=$([[ "$SKIP_VMDK" == "1" ]] && echo skipped || echo "$VMDK_PATH")"
+    echo "SBOM=$SBOM_PATH"
+    echo "PACKAGE_MANIFEST=$PACKAGE_MANIFEST"
     echo "EFI_BOOTLOADER=present"
-    echo "FSTAB_UUID=yes"
-    echo "HOSTNAME_MATCH=yes"
-    echo "KERNEL_VMLINUZ=$KERNEL_VMLINUZ"
-    echo "KERNEL_VERSION=$KERNEL_VERSION"
+    echo "KERNEL=$KERNEL_VMLINUZ"
     echo "INITRD=$INITRD_IMG"
-    echo "GRUB_HAS_LINUX_LINE=$GRUB_HAS_LINUX_LINE"
-    echo "GRUB_HAS_INITRD_LINE=$GRUB_HAS_INITRD_LINE"
-    echo "GRUB_ROOT_UUID=$GRUB_ROOT_UUID"
-    echo "FSTAB_ROOT_UUID=$FSTAB_ROOT_UUID"
-    echo "GRUB_ROOT_UUID_MATCHES_FSTAB=$GRUB_ROOT_UUID_MATCHES_FSTAB"
-    if [[ ${#WARNINGS[@]} -gt 0 ]]; then
-        echo "WARNINGS=${WARNINGS[*]}"
-    fi
-} >> "$REPORT_FILE"
+    echo "ROOT_UUID_MATCH=yes"
+    echo "FILESYSTEM_CHECK=passed"
+    echo "CI_SMOKE_HOOK=$CI_SMOKE"
+    echo "STATIC_VERIFICATION=passed"
+} >"$REPORT_FILE"
 
-log_info "[+] Build complete."
-log_info "VMDK: $VMDK_PATH"
-log_info "Load it with CybrexTech_Dev_Preview.vmx (EFI firmware)."
+write_reproducibility_report
+cp "$REPORT_FILE" "$ARTIFACTS_DIR/build-report.txt"
+
+(
+    cd "$ARTIFACTS_DIR"
+    files=(cybrexOS.spdx packages.tsv REPRODUCIBILITY.md build-report.txt)
+    [[ -f CybrexTech_Dev_Preview.vmdk ]] && files+=(CybrexTech_Dev_Preview.vmdk)
+    sha256sum "${files[@]}" >SHA256SUMS
+)
+
+log_info "Build complete"
+log_info "Report: $REPORT_FILE"
+log_info "SBOM: $SBOM_PATH"
+log_info "Reproducibility: $REPRO_REPORT"

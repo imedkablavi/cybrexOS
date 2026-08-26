@@ -1,4 +1,4 @@
-# CybrexOS – Debian-Based VM Image Build Pipeline
+# CybrexOS - Debian-Based VM Image Build Pipeline
 
 CybrexOS is a **custom Debian-based Linux OS build pipeline** designed to produce
 bootable virtual machine images for **VMware (EFI)**.
@@ -10,7 +10,7 @@ The project focuses on:
 - Safety-first build scripting (no global destructive operations)
 - Security-hardened kernel and firewall out of the box
 
-> ⚠️ Project status: **ALPHA**
+> Project status: **ALPHA**
 > This repository is under active development and not yet production-ready.
 
 ---
@@ -136,31 +136,31 @@ The system uses:
 ## Security
 
 **Active baseline:**
-- ✅ SSH enabled (inbound SSH port closed by default firewall; open manually if needed)
-- ✅ `nftables` deny-all-inbound firewall — enabled on boot
-- ✅ Kernel hardening via `sysctl.d/99-cybrex-hardening.conf` (ASLR, SYN cookies,
+- SSH enabled (inbound SSH port closed by default firewall; open manually if needed)
+- `nftables` deny-all-inbound firewall, enabled on boot
+- Kernel hardening via `sysctl.d/99-cybrex-hardening.conf` (ASLR, SYN cookies,
   ptrace restriction, dmesg restriction, kptr restriction, etc.)
-- ✅ `cybrex-ctl security` — live audit: failed logins, open ports, SUID binaries
-- ✅ `cybrex-box` — bubblewrap sandbox wrapper for untrusted apps
+- `cybrex-ctl security`, live audit: failed logins, open ports, SUID binaries
+- `cybrex-box`, bubblewrap sandbox wrapper for untrusted apps
 
 **Planned:**
-- ☐ Secure Boot (sbctl key enrollment — helper script exists: `cybrex-secureboot`)
-- ☐ CI-based smoke boot testing
-- ☐ Artifact signing & SBOM
+- Secure Boot (sbctl key enrollment; helper script exists: `cybrex-secureboot`)
+- CI-based smoke boot testing
+- Artifact signing & SBOM
 
 ---
 
 ## Control Layer (`cybrex-ctl`)
 
 ```text
-cybrex-ctl status                          – System overview
-cybrex-ctl update                          – Full package upgrade
+cybrex-ctl status                          - System overview
+cybrex-ctl update                          - Full package upgrade
 cybrex-ctl power [saver|balanced|performance]
-                                           – Get or apply CPU power profile
-cybrex-ctl security                        – Security audit
-cybrex-ctl firewall [status|reload|flush]  – Manage nftables
-cybrex-ctl logs [N]                        – Show last N cybrex log lines
-cybrex-ctl health                          – Full health check
+                                           - Get or apply CPU power profile
+cybrex-ctl security                        - Security audit
+cybrex-ctl firewall [status|reload|flush]  - Manage nftables
+cybrex-ctl logs [N]                        - Show last N cybrex log lines
+cybrex-ctl health                          - Full health check
 ```
 
 ---
@@ -169,11 +169,11 @@ cybrex-ctl health                          – Full health check
 
 The `cybrex-daemon` systemd service runs a lightweight Python HTTP API on port **3001**:
 
-| Method | Path         | Description                                      |
-|--------|--------------|--------------------------------------------------|
-| GET    | `/api/state` | Full JSON system state (power, security, system) |
-| GET    | `/api/health`| Liveness probe `{"status":"ok"}`                 |
-| POST   | `/api/power` | Switch power profile `{"profile":"balanced"}`    |
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/state` | Full JSON system state (power, security, system) |
+| GET | `/api/health` | Liveness probe `{"status":"ok"}` |
+| POST | `/api/power` | Switch power profile `{"profile":"balanced"}` |
 
 ---
 
@@ -186,17 +186,17 @@ to keep the system current. It is enabled during the build.
 
 ## Project Status
 
-| Feature                              | Status      |
-|--------------------------------------|-------------|
-| Kernel installation                  | ✅ Done     |
-| Boot (manual verification)           | ✅ Done     |
-| nftables firewall (enabled on boot)  | ✅ Done     |
-| Kernel sysctl hardening              | ✅ Done     |
-| Log rotation (`logrotate.d/cybrex`)  | ✅ Done     |
-| cybrex-ctl (full featured)           | ✅ Done     |
-| cybrex-daemon API (health + POST)    | ✅ Done     |
-| Weekly auto-update timer             | ✅ Done     |
-| Automated smoke boot                 | ❌ Planned  |
-| Reproducible builds                  | ⚠️ Partial  |
-| CI/CD                                | ❌ Planned  |
-| Secure Boot enrollment               | ❌ Planned  |
+| Feature | Status |
+| --- | --- |
+| Kernel installation | Done |
+| Boot (manual verification) | Done |
+| nftables firewall (enabled on boot) | Done |
+| Kernel sysctl hardening | Done |
+| Log rotation (`logrotate.d/cybrex`) | Done |
+| cybrex-ctl (full featured) | Done |
+| cybrex-daemon API (health + POST) | Done |
+| Weekly auto-update timer | Done |
+| Automated smoke boot | Planned |
+| Reproducible builds | Partial |
+| CI/CD | Planned |
+| Secure Boot enrollment | Planned |

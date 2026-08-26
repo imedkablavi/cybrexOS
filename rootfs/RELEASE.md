@@ -1,4 +1,4 @@
-# CybrexTech OS - Release Notes
+# CybrexTech OS – Release Notes
 
 **Version**: 1.1.0-alpha
 **Codename**: Obsidian Green
@@ -16,7 +16,7 @@ designed for high-security development and daily use.
 
 ### Security
 - **Kernel hardening**: `/etc/sysctl.d/99-cybrex-hardening.conf` is now shipped
-  and applied on every boot via `systemd-sysctl`. Covers network hardening
+  and applied on every boot via `systemd-sysctl`.  Covers network hardening
   (SYN cookies, martian logging, no IP forwarding), memory protections
   (ASLR full, ptrace restrict, kptr restrict, dmesg restrict), and more.
 - **nftables enabled on boot**: `nftables.service` is now explicitly enabled
@@ -24,22 +24,22 @@ designed for high-security development and daily use.
 
 ### Control Layer
 - `cybrex-ctl` upgraded to **v1.1.0**:
-  - `power [saver|balanced|performance]`: now writes the CPU frequency
+  - `power [saver|balanced|performance]`: now *actually* writes the CPU frequency
     governor and toggles Intel P-State turbo boost from `/etc/cybrex/power.toml`.
-  - `firewall [status|reload|flush]`: sub-command to inspect, reload or flush
+  - `firewall [status|reload|flush]`: new sub-command to inspect, reload or flush
     the nftables ruleset.
   - `logs [N]`: tail the cybrex ctl log and the daemon journal.
-  - `health`: health check for kernel, disk, memory, services,
+  - `health`: comprehensive health check — kernel, disk, memory, services,
     and sysctl hardening validation.
-  - `security`: expanded audit for failed SSH logins, open ports, SUID binaries,
-    and sudo grants.
+  - `security`: expanded audit — failed SSH logins, open ports, SUID binaries,
+    sudo grants.
   - Removed `set -e` global flag (replaced with `set -uo pipefail`) to prevent
     early exits from non-fatal read operations.
 
 ### Daemon
 - `cybrex-daemon` rewritten with proper endpoints:
-  - `GET /api/health` - liveness probe.
-  - `POST /api/power` - switch power profile via the daemon API.
+  - `GET /api/health` – liveness probe.
+  - `POST /api/power` – switch power profile via the daemon API.
   - Config refresh interval reduced to 5 s.
   - Uses `BaseHTTPRequestHandler` with explicit Content-Length for correct
     HTTP/1.1 compliance.
@@ -47,7 +47,7 @@ designed for high-security development and daily use.
   now correctly runs `/usr/bin/python3 /usr/local/bin/cybrex-daemon`.
 
 ### Maintenance
-- **Log rotation**: `/etc/logrotate.d/cybrex` - daily rotation, 14-day retention,
+- **Log rotation**: `/etc/logrotate.d/cybrex` — daily rotation, 14-day retention,
   compressed, with post-rotate daemon SIGHUP.
 - **Auto-update timer**: `cybrex-update.service` + `cybrex-update.timer` provide
   weekly unattended upgrades (enabled during image build).
@@ -60,8 +60,8 @@ designed for high-security development and daily use.
 ## Key Features
 
 ### 1. Unified Control Layer
-- **CLI**: `cybrex-ctl` - status, update, power, security, firewall, logs, health.
-- **API**: `cybrex-daemon` on port 3001 - `/api/state`, `/api/health`, `/api/power`.
+- **CLI**: `cybrex-ctl` — status, update, power, security, firewall, logs, health.
+- **API**: `cybrex-daemon` on port 3001 — `/api/state`, `/api/health`, `/api/power`.
 - **Config**: Centralised TOML in `/etc/cybrex/` (main, power, security).
 
 ### 2. Security by Default

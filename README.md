@@ -10,7 +10,7 @@ The project focuses on:
 - Safety-first build scripting (no global destructive operations)
 - Security-hardened kernel and firewall out of the box
 
-> ⚠️ Project status: **ALPHA**
+>  Project status: **ALPHA**
 > This repository is under active development and not yet production-ready.
 
 ---
@@ -136,17 +136,17 @@ The system uses:
 ## Security
 
 **Active baseline:**
-- ✅ SSH enabled (inbound SSH port closed by default firewall; open manually if needed)
-- ✅ `nftables` deny-all-inbound firewall — enabled on boot
-- ✅ Kernel hardening via `sysctl.d/99-cybrex-hardening.conf` (ASLR, SYN cookies,
+-  SSH enabled (inbound SSH port closed by default firewall; open manually if needed)
+-  `nftables` deny-all-inbound firewall - enabled on boot
+-  Kernel hardening via `sysctl.d/99-cybrex-hardening.conf` (ASLR, SYN cookies,
   ptrace restriction, dmesg restriction, kptr restriction, etc.)
-- ✅ `cybrex-ctl security` — live audit: failed logins, open ports, SUID binaries
-- ✅ `cybrex-box` — bubblewrap sandbox wrapper for untrusted apps
+-  `cybrex-ctl security` - live audit: failed logins, open ports, SUID binaries
+-  `cybrex-box` - bubblewrap sandbox wrapper for untrusted apps
 
 **Planned:**
-- ☐ Secure Boot (sbctl key enrollment — helper script exists: `cybrex-secureboot`)
-- ☐ CI-based smoke boot testing
-- ☐ Artifact signing & SBOM
+-  Secure Boot (sbctl key enrollment - helper script exists: `cybrex-secureboot`)
+-  CI-based smoke boot testing
+-  Artifact signing & SBOM
 
 ---
 
@@ -188,15 +188,15 @@ to keep the system current. It is enabled during the build.
 
 | Feature                              | Status      |
 |--------------------------------------|-------------|
-| Kernel installation                  | ✅ Done     |
-| Boot (manual verification)           | ✅ Done     |
-| nftables firewall (enabled on boot)  | ✅ Done     |
-| Kernel sysctl hardening              | ✅ Done     |
-| Log rotation (`logrotate.d/cybrex`)  | ✅ Done     |
-| cybrex-ctl (full featured)           | ✅ Done     |
-| cybrex-daemon API (health + POST)    | ✅ Done     |
-| Weekly auto-update timer             | ✅ Done     |
-| Automated smoke boot                 | ❌ Planned  |
-| Reproducible builds                  | ⚠️ Partial  |
-| CI/CD                                | ❌ Planned  |
-| Secure Boot enrollment               | ❌ Planned  |
+| Kernel installation                  |  Done     |
+| Boot (manual verification)           |  Done     |
+| nftables firewall (enabled on boot)  |  Done     |
+| Kernel sysctl hardening              |  Done     |
+| Log rotation (`logrotate.d/cybrex`)  |  Done     |
+| cybrex-ctl (full featured)           |  Done     |
+| cybrex-daemon API (health + POST)    |  Done     |
+| Weekly auto-update timer             |  Done     |
+| Automated smoke boot                 |  Planned  |
+| Reproducible builds                  |  Partial  |
+| CI/CD                                |  Planned  |
+| Secure Boot enrollment               |  Planned  |

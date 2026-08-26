@@ -29,9 +29,9 @@ designed for high-security development and daily use.
   - `firewall [status|reload|flush]`: new sub-command to inspect, reload or flush
     the nftables ruleset.
   - `logs [N]`: tail the cybrex ctl log and the daemon journal.
-  - `health`: comprehensive health check — kernel, disk, memory, services,
+  - `health`: comprehensive health check - kernel, disk, memory, services,
     and sysctl hardening validation.
-  - `security`: expanded audit — failed SSH logins, open ports, SUID binaries,
+  - `security`: expanded audit - failed SSH logins, open ports, SUID binaries,
     sudo grants.
   - Removed `set -e` global flag (replaced with `set -uo pipefail`) to prevent
     early exits from non-fatal read operations.
@@ -47,7 +47,7 @@ designed for high-security development and daily use.
   now correctly runs `/usr/bin/python3 /usr/local/bin/cybrex-daemon`.
 
 ### Maintenance
-- **Log rotation**: `/etc/logrotate.d/cybrex` — daily rotation, 14-day retention,
+- **Log rotation**: `/etc/logrotate.d/cybrex` - daily rotation, 14-day retention,
   compressed, with post-rotate daemon SIGHUP.
 - **Auto-update timer**: `cybrex-update.service` + `cybrex-update.timer` provide
   weekly unattended upgrades (enabled during image build).
@@ -60,8 +60,8 @@ designed for high-security development and daily use.
 ## Key Features
 
 ### 1. Unified Control Layer
-- **CLI**: `cybrex-ctl` — status, update, power, security, firewall, logs, health.
-- **API**: `cybrex-daemon` on port 3001 — `/api/state`, `/api/health`, `/api/power`.
+- **CLI**: `cybrex-ctl` - status, update, power, security, firewall, logs, health.
+- **API**: `cybrex-daemon` on port 3001 - `/api/state`, `/api/health`, `/api/power`.
 - **Config**: Centralised TOML in `/etc/cybrex/` (main, power, security).
 
 ### 2. Security by Default
